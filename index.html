@@ -1,0 +1,896 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>도면 STEP 변환기</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script type="importmap">{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js", "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/" } }</script>
+<style>
+:root{
+  --bg:#f4f5f7; --panel:#ffffff; --line:#e3e6ea; --text:#1d232b; --sub:#66707c; --accent:#1f5fbf; --accent-soft:#e8f0fc;
+  --warn:#b45309; --warn-soft:#fff4e0; --ok:#15803d; --ok-soft:#e7f6ec; --err:#b91c1c; --err-soft:#fdecec;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font:13px/1.45 "Pretendard","Malgun Gothic","Apple SD Gothic Neo",system-ui,sans-serif}
+button,select,input{font:inherit;color:inherit}
+header{height:48px;display:flex;align-items:center;gap:12px;padding:0 14px;background:#1d2a3a;color:#fff}
+header h1{font-size:15px;margin:0;font-weight:700;letter-spacing:-.2px}
+header .sub{color:#a9b6c6;font-size:12px}
+header .sp{flex:1}
+.pill{padding:3px 10px;border-radius:99px;font-size:12px;background:#2c3d52;color:#cfd8e3;white-space:nowrap}
+.pill.ok{background:#1f5136;color:#c9f0d6}.pill.err{background:#5a1f1f;color:#ffd3d3}
+.btn{border:1px solid var(--line);background:#fff;border-radius:6px;padding:6px 11px;cursor:pointer;white-space:nowrap}
+.btn:hover{border-color:#b9c2cd}
+.btn.pri{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn.pri:hover{background:#184f9f}
+.btn.on{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+header .btn{background:#2c3d52;border-color:#3b5069;color:#fff}
+main{display:flex;height:calc(100% - 48px)}
+#left{flex:1;display:flex;flex-direction:column;min-width:0}
+.tabs{display:flex;gap:2px;padding:8px 10px 0;background:var(--bg)}
+.tab{padding:7px 14px;border:1px solid var(--line);border-bottom:none;border-radius:6px 6px 0 0;background:#eceef1;cursor:pointer;color:var(--sub)}
+.tab.on{background:#fff;color:var(--text);font-weight:600}
+.tools{display:flex;gap:6px;align-items:center;padding:6px 10px;background:#fff;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.tools .hint{color:var(--sub);font-size:12px;margin-left:6px}
+#stage{flex:1;position:relative;background:#fff;overflow:hidden}
+#cv,#three{position:absolute;inset:0;width:100%;height:100%}
+#cv{cursor:grab}#cv.rect{cursor:crosshair}#cv.dragging{cursor:grabbing}
+#drop{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:10px;color:var(--sub);text-align:center}
+#drop b{color:var(--text);font-size:16px}
+#drop.over{background:var(--accent-soft)}
+#right{width:470px;border-left:1px solid var(--line);background:var(--panel);overflow:auto}
+section{border-bottom:1px solid var(--line);padding:12px 14px}
+section h2{margin:0 0 8px;font-size:13px;display:flex;align-items:center;gap:8px}
+section h2 .n{display:inline-flex;width:20px;height:20px;border-radius:50%;background:var(--accent);color:#fff;font-size:11px;align-items:center;justify-content:center}
+.row{display:flex;align-items:center;gap:8px;margin:6px 0;flex-wrap:wrap}
+.row label{color:var(--sub);min-width:74px}
+.row input[type=number],.row input[type=text]{width:90px;padding:5px 7px;border:1px solid var(--line);border-radius:5px}
+.row input.wide{width:200px}
+select{padding:5px 6px;border:1px solid var(--line);border-radius:5px;background:#fff}
+.muted{color:var(--sub);font-size:12px}
+.note{font-size:12px;padding:7px 9px;border-radius:6px;margin:6px 0}
+.note.warn{background:var(--warn-soft);color:var(--warn)}
+.note.ok{background:var(--ok-soft);color:var(--ok)}
+.note.err{background:var(--err-soft);color:var(--err)}
+.note.info{background:var(--accent-soft);color:#204a86}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{color:var(--sub);font-weight:500;text-align:left;padding:4px;border-bottom:1px solid var(--line)}
+td{padding:4px;border-bottom:1px solid #f0f2f4;vertical-align:middle}
+tr.hl td{background:#fff7d6}
+tr.need td{background:var(--warn-soft)}
+td select{max-width:150px}
+td input[type=number]{width:58px;padding:3px 5px;border:1px solid var(--line);border-radius:4px}
+.chip{display:inline-block;width:11px;height:11px;border-radius:3px;vertical-align:middle}
+.tag{display:inline-block;font-size:11px;padding:1px 6px;border-radius:4px;background:#eef0f3;color:#4b5563;margin:1px 2px 1px 0}
+.tag.b{background:#e8f0fc;color:#204a86}.tag.o{background:#fff1e0;color:#9a4b07}
+.res{display:grid;grid-template-columns:auto 1fr;gap:3px 12px;font-size:13px;margin:8px 0}
+.res div:nth-child(odd){color:var(--sub)}
+.big{font-size:18px;font-weight:700}
+#busy{position:fixed;inset:0;background:rgba(20,30,45,.35);display:none;align-items:center;justify-content:center;z-index:9}
+#busy div{background:#fff;padding:16px 22px;border-radius:8px;font-weight:600}
+.legend{display:flex;gap:10px;flex-wrap:wrap;font-size:11px;color:var(--sub)}
+.legend span{display:inline-flex;align-items:center;gap:4px}
+</style>
+</head>
+<body>
+<header>
+  <h1>도면 → STEP 변환기</h1><span class="sub">PDF 도면 벡터를 읽어 3D STEP 생성 · 판재·블록형 부품</span>
+  <span class="sp"></span>
+  <span id="fname" class="sub"></span>
+  <span id="eng" class="pill">3D 엔진 로딩 중…</span>
+  <button class="btn" id="bOpen">PDF 열기</button>
+  <input type="file" id="fi" accept="application/pdf" hidden>
+</header>
+<main>
+  <div id="left">
+    <div class="tabs"><div class="tab on" data-t="pdf">도면</div><div class="tab" data-t="3d">3D 미리보기</div></div>
+    <div class="tools" id="tools">
+      <select id="pageSel"></select>
+      <button class="btn" id="mTop">① 상면도 영역</button>
+      <button class="btn" id="mBot">② 하면도 영역 (선택)</button>
+      <button class="btn" id="mSide">측면도 (두께 확인)</button>
+      <button class="btn" id="bFit">화면 맞춤</button>
+      <span class="hint" id="toolHint">휠: 확대/축소 · 드래그: 이동</span>
+    </div>
+    <div id="stage">
+      <canvas id="cv"></canvas>
+      <div id="three" style="display:none"></div>
+      <div id="drop"><b>PDF 도면을 여기에 끌어다 놓으세요</b><span>CAD에서 출력한 PDF(벡터)만 지원합니다. 스캔 PDF는 선 정보가 없어 변환할 수 없습니다.</span><button class="btn pri" id="bOpen2">PDF 열기</button></div>
+    </div>
+  </div>
+  <div id="right">
+    <section>
+      <h2><span class="n">1</span>도면 해석 설정</h2>
+      <div class="row"><label>축척</label>1 : <input type="number" id="scaleN" value="1" min="0.01" step="any"><span class="muted" id="scaleHint"></span></div>
+      <div class="row"><label>형상 선 굵기</label><select id="wSel"></select><span class="muted">치수선·중심선 제외용</span></div>
+      <div class="row"><label>하면도 반전</label><select id="mirSel"><option value="X">좌우 반전 (X)</option><option value="Y">상하 반전 (Y)</option></select></div>
+      <div id="viewInfo"></div>
+    </section>
+    <section>
+      <h2><span class="n">2</span>기본 형상</h2>
+      <div class="row"><label>판 두께</label><input type="number" id="T" step="any" placeholder="mm"> mm <span class="muted" id="sideInfo"></span></div>
+      <div class="row"><label>재질</label><select id="mat"></select><input type="number" id="dens" step="any" style="width:70px"> g/cm³</div>
+      <div class="row"><label>도면 중량</label><input type="number" id="dw" step="any" placeholder="kg"> kg <span class="muted">형상 검증용</span></div>
+      <div class="row"><label>품번(파일명)</label><input type="text" id="pno" class="wide"></div>
+    </section>
+    <section>
+      <h2><span class="n">3</span>윤곽 지정</h2>
+      <div class="legend" id="legP"></div>
+      <div id="profTbl" class="muted">상면도 영역을 지정하면 윤곽이 표시됩니다.</div>
+    </section>
+    <section>
+      <h2><span class="n">4</span>홀 지정</h2>
+      <div id="holeTbl" class="muted">상면도 영역을 지정하면 홀이 표시됩니다.</div>
+    </section>
+    <section>
+      <h2><span class="n">5</span>3D 생성 · STEP 저장</h2>
+      <div class="row"><button class="btn pri" id="bBuild" disabled>3D 생성</button><button class="btn" id="bStep" disabled>STEP 저장</button></div>
+      <div id="result"></div>
+      <div class="row" style="margin-top:10px"><button class="btn" id="bSaveCfg">설정 저장</button><button class="btn" id="bLoadCfg">설정 불러오기</button><input type="file" id="cfgFi" accept=".json" hidden><span class="muted">같은 도면 재변환·리비전 대응용</span></div>
+    </section>
+    <section class="muted" style="font-size:11.5px">
+      좌표계: 원점 = 외형 중심, 바닥면 Z=0, 상면 방향 +Z. 탭은 도면에 그려진 드릴 지름으로 모델링됩니다.
+      모델은 도면 선을 그대로 사용하므로 도면 오류도 그대로 반영됩니다 — 중량 비교로 해석 오류를 확인하세요.
+    </section>
+  </div>
+</main>
+<div id="busy"><div id="busyMsg">처리 중…</div></div>
+
+<script>
+// ===== core geometry: PDF vector -> loops / circles / line-arc entities =====
+// Coordinates: page points, y-down (viewport scale 1). Model mm via K = 0.352778 * scaleN.
+const CORE = (() => {
+  const OPS_CACHE = {};
+  function mul(m, n) { // m then n  (pdf matrix [a b c d e f])
+    return [m[0]*n[0]+m[1]*n[2], m[0]*n[1]+m[1]*n[3], m[2]*n[0]+m[3]*n[2], m[2]*n[1]+m[3]*n[3],
+            m[4]*n[0]+m[5]*n[2]+n[4], m[4]*n[1]+m[5]*n[3]+n[5]];
+  }
+  function ap(m, x, y) { return [m[0]*x+m[2]*y+m[4], m[1]*x+m[3]*y+m[5]]; }
+  function colorKey(a) {
+    if (a == null) return '#000000';
+    if (typeof a[0] === 'string') return a[0].toLowerCase();
+    if (a.length === 1) { const v = Math.round(a[0] * (a[0] <= 1 ? 255 : 1)); return '#' + [v,v,v].map(x=>x.toString(16).padStart(2,'0')).join(''); }
+    const s = a[0] <= 1 && a[1] <= 1 && a[2] <= 1 ? 255 : 1;
+    return '#' + a.slice(0,3).map(v => Math.round(v*s).toString(16).padStart(2,'0')).join('');
+  }
+  // flatten cubic bezier
+  function bez(p0, p1, p2, p3, n) {
+    const out = [];
+    for (let i = 1; i <= n; i++) { const t = i/n, u = 1-t;
+      out.push([u*u*u*p0[0]+3*u*u*t*p1[0]+3*u*t*t*p2[0]+t*t*t*p3[0], u*u*u*p0[1]+3*u*u*t*p1[1]+3*u*t*t*p2[1]+t*t*t*p3[1]]); }
+    return out;
+  }
+  async function extractSegments(page, OPS) {
+    const ol = await page.getOperatorList();
+    const vt = page.getViewport({ scale: 1 }).transform;
+    let ctm = [1,0,0,1,0,0], lw = 1, col = '#000000';
+    const stack = [];
+    let pending = [];
+    const segs = [];
+    const F = ol.fnArray, A = ol.argsArray;
+    for (let i = 0; i < F.length; i++) {
+      const f = F[i], a = A[i];
+      switch (f) {
+        case OPS.save: stack.push([ctm, lw, col]); break;
+        case OPS.restore: if (stack.length) [ctm, lw, col] = stack.pop(); break;
+        case OPS.transform: ctm = mul(a, ctm); break;
+        case OPS.paintFormXObjectBegin: stack.push([ctm, lw, col]); if (a && a[0]) ctm = mul(a[0], ctm); break;
+        case OPS.paintFormXObjectEnd: if (stack.length) [ctm, lw, col] = stack.pop(); break;
+        case OPS.setLineWidth: lw = a[0]; break;
+        case OPS.setStrokeRGBColor: case OPS.setStrokeGray: case OPS.setStrokeColor: col = colorKey(a); break;
+        case OPS.constructPath: {
+          const ops = a[0], args = a[1]; let k = 0; let cur = null, start = null;
+          const m = mul(ctm, vt);
+          const P = (x, y) => ap(m, x, y);
+          for (const op of ops) {
+            if (op === OPS.moveTo) { cur = P(args[k], args[k+1]); start = cur; k += 2; }
+            else if (op === OPS.lineTo) { const p = P(args[k], args[k+1]); k += 2; if (cur) pending.push([cur, p]); cur = p; }
+            else if (op === OPS.curveTo) { const p1=P(args[k],args[k+1]),p2=P(args[k+2],args[k+3]),p3=P(args[k+4],args[k+5]); k+=6; if(cur){let q=cur; for(const r of bez(cur,p1,p2,p3,8)){pending.push([q,r]);q=r;}} cur=p3; }
+            else if (op === OPS.curveTo2) { const p2=P(args[k],args[k+1]),p3=P(args[k+2],args[k+3]); k+=4; if(cur){let q=cur; for(const r of bez(cur,cur,p2,p3,8)){pending.push([q,r]);q=r;}} cur=p3; }
+            else if (op === OPS.curveTo3) { const p1=P(args[k],args[k+1]),p3=P(args[k+2],args[k+3]); k+=4; if(cur){let q=cur; for(const r of bez(cur,p1,p3,p3,8)){pending.push([q,r]);q=r;}} cur=p3; }
+            else if (op === OPS.closePath) { if (cur && start && (cur[0]!==start[0]||cur[1]!==start[1])) pending.push([cur, start]); cur = start; }
+            else if (op === OPS.rectangle) { const x=args[k],y=args[k+1],w=args[k+2],h=args[k+3]; k+=4;
+              const c=[P(x,y),P(x+w,y),P(x+w,y+h),P(x,y+h)]; for(let j=0;j<4;j++) pending.push([c[j],c[(j+1)%4]]); cur=c[0]; start=c[0]; }
+          }
+          break;
+        }
+        case OPS.stroke: case OPS.closeStroke: case OPS.fillStroke: case OPS.eoFillStroke: case OPS.closeFillStroke: case OPS.closeEOFillStroke: {
+          const ew = Math.round(lw * Math.sqrt(Math.abs(ctm[0]*ctm[3]-ctm[1]*ctm[2])) * 100) / 100;
+          for (const s of pending) segs.push({ a: s[0], b: s[1], w: ew, c: col });
+          pending = []; break;
+        }
+        case OPS.fill: case OPS.eoFill: case OPS.endPath: pending = []; break;
+      }
+    }
+    return segs;
+  }
+
+  // ---------- helpers ----------
+  function fitCircle(pts) {
+    // algebraic least squares (Kasa)
+    let n = pts.length, sx=0, sy=0; for (const p of pts) { sx+=p[0]; sy+=p[1]; }
+    const mx = sx/n, my = sy/n;
+    let Suu=0,Suv=0,Svv=0,Suuu=0,Svvv=0,Suvv=0,Svuu=0;
+    for (const p of pts) { const u=p[0]-mx, v=p[1]-my;
+      Suu+=u*u; Suv+=u*v; Svv+=v*v; Suuu+=u*u*u; Svvv+=v*v*v; Suvv+=u*v*v; Svuu+=v*u*u; }
+    const det = Suu*Svv - Suv*Suv;
+    if (Math.abs(det) < 1e-12) return null;
+    const b1 = 0.5*(Suuu+Suvv), b2 = 0.5*(Svvv+Svuu);
+    const uc = (b1*Svv - b2*Suv)/det, vc = (Suu*b2 - Suv*b1)/det;
+    const cx = uc+mx, cy = vc+my;
+    const r = Math.sqrt(uc*uc + vc*vc + (Suu+Svv)/n);
+    let res = 0; for (const p of pts) res = Math.max(res, Math.abs(Math.hypot(p[0]-cx, p[1]-cy) - r));
+    return { cx, cy, r, res };
+  }
+  const len = (a, b) => Math.hypot(b[0]-a[0], b[1]-a[1]);
+  const r3 = v => Math.round(v * 1000) / 1000;
+
+  // segments (page pt) inside rect, width filter -> model mm coords (x right, y up) relative to center
+  function segsInRect(segs, rect, widthSet) {
+    const [x0, y0, x1, y1] = rect;
+    const inside = p => p[0] >= x0 && p[0] <= x1 && p[1] >= y0 && p[1] <= y1;
+    return segs.filter(s => (!widthSet || widthSet.has(s.w)) && inside(s.a) && inside(s.b) && len(s.a, s.b) > 1e-6);
+  }
+
+  // build chains by endpoint matching (tol in pt)
+  function buildLoops(segs, tolPt = 0.05) {
+    const key = p => Math.round(p[0]/tolPt) + ',' + Math.round(p[1]/tolPt);
+    // dedupe
+    const seen = new Set(); const S = [];
+    for (const s of segs) { const k1 = key(s.a), k2 = key(s.b); const k = k1 < k2 ? k1+'|'+k2 : k2+'|'+k1;
+      if (k1 === k2 || seen.has(k)) continue; seen.add(k); S.push({ a: s.a, b: s.b, ka: k1, kb: k2 }); }
+    const adj = new Map();
+    S.forEach((s, i) => { for (const k of [s.ka, s.kb]) { if (!adj.has(k)) adj.set(k, []); adj.get(k).push(i); } });
+    const used = new Uint8Array(S.length);
+    const loops = [], open = [];
+    for (let i = 0; i < S.length; i++) {
+      if (used[i]) continue;
+      // collect component
+      const comp = []; const stack = [i]; used[i] = 1;
+      while (stack.length) { const j = stack.pop(); comp.push(j);
+        for (const k of [S[j].ka, S[j].kb]) for (const n of adj.get(k)) if (!used[n]) { used[n] = 1; stack.push(n); } }
+      // closed simple loop if every node degree == 2
+      const nodes = new Map();
+      for (const j of comp) for (const k of [S[j].ka, S[j].kb]) nodes.set(k, (nodes.get(k)||0) + 1);
+      const simple = [...nodes.values()].every(d => d === 2);
+      if (!simple) {
+        // try to split: extract cycles greedily is complex; keep as open/complex
+        open.push(comp.map(j => S[j])); continue;
+      }
+      // order
+      const pts = []; let cur = S[comp[0]].ka, prevSeg = -1;
+      const pos = new Map(); for (const j of comp) { pos.set(S[j].ka, S[j].a); pos.set(S[j].kb, S[j].b); }
+      for (let guard = 0; guard <= comp.length; guard++) {
+        pts.push(pos.get(cur));
+        const nexts = adj.get(cur).filter(n => n !== prevSeg && comp.includes(n));
+        const n = nexts[0]; if (n === undefined) break;
+        const nk = S[n].ka === cur ? S[n].kb : S[n].ka; prevSeg = n; cur = nk;
+        if (cur === S[comp[0]].ka) break;
+      }
+      loops.push(pts);
+    }
+    return { loops, open };
+  }
+
+  // polyline (mm, closed) -> entities [['L',a,b] | ['A',a,mid,b,r]]
+  function toEntities(poly) {
+    const n = poly.length;
+    const L = [], T = []; // segment lengths, turning angle at vertex i (between seg i-1 and seg i)
+    for (let i = 0; i < n; i++) L.push(len(poly[i], poly[(i+1)%n]));
+    const dir = i => { const a = poly[i], b = poly[(i+1)%n]; return Math.atan2(b[1]-a[1], b[0]-a[0]); };
+    for (let i = 0; i < n; i++) { let d = dir(i) - dir((i-1+n)%n); while (d > Math.PI) d -= 2*Math.PI; while (d < -Math.PI) d += 2*Math.PI; T.push(d); }
+    const maxChord = 6, maxTurn = 40 * Math.PI/180;
+    // arc-candidate segment: short, and has a neighbor with similar length & smooth same-sign turn
+    const cand = new Array(n).fill(false);
+    for (let i = 0; i < n; i++) {
+      if (L[i] > maxChord) continue;
+      const prev = (i-1+n)%n, next = (i+1)%n;
+      const okPrev = Math.abs(L[prev]/L[i] - 1) < 0.35 && Math.abs(T[i]) > 1e-4 && Math.abs(T[i]) < maxTurn;
+      const okNext = Math.abs(L[next]/L[i] - 1) < 0.35 && Math.abs(T[next]) > 1e-4 && Math.abs(T[next]) < maxTurn;
+      cand[i] = okPrev || okNext;
+    }
+    // full circle?
+    if (cand.every(Boolean)) {
+      const c = fitCircle(poly);
+      if (c && c.res < Math.max(0.02, c.r*0.01)) return { circle: { x: r3(c.cx), y: r3(c.cy), r: r3(c.r) } };
+    }
+    // rotate start to a non-candidate segment (or a junction)
+    let s0 = cand.findIndex(v => !v);
+    if (s0 < 0) s0 = 0;
+    const idx = []; for (let k = 0; k < n; k++) idx.push((s0+k)%n);
+    const ents = [];
+    let k = 0;
+    while (k < n) {
+      const i = idx[k];
+      if (!cand[i]) { ents.push(['L', poly[i], poly[(i+1)%n]]); k++; continue; }
+      // run of candidates with consistent turn sign
+      let j = k; const sign = Math.sign(T[idx[Math.min(k+1, n-1)]] || T[i]);
+      while (j < n && cand[idx[j]] && (j === k || (Math.sign(T[idx[j]]) === sign && Math.abs(T[idx[j]]) < maxTurn && Math.abs(L[idx[j]]/L[idx[j-1]]-1) < 0.35))) j++;
+      const pts = []; for (let t = k; t < j; t++) pts.push(poly[idx[t]]); pts.push(poly[(idx[j-1]+1)%n]);
+      if (pts.length >= 3) {
+        const c = fitCircle(pts);
+        if (c && c.res < Math.max(0.03, c.r*0.01)) {
+          // mid point on circle at middle of the arc path
+          const m = pts[Math.floor(pts.length/2)];
+          let mid;
+          if (pts.length % 2 === 1) mid = m; else { const a = pts[pts.length/2-1], b = pts[pts.length/2];
+            const mx = (a[0]+b[0])/2 - c.cx, my = (a[1]+b[1])/2 - c.cy, d = Math.hypot(mx, my); mid = [c.cx + mx/d*c.r, c.cy + my/d*c.r]; }
+          ents.push(['A', pts[0], mid, pts[pts.length-1], c.r]); k = j; continue;
+        }
+      }
+      // fallback: lines
+      for (let t = k; t < j; t++) ents.push(['L', poly[idx[t]], poly[(idx[t]+1)%n]]);
+      k = j;
+    }
+    // merge collinear lines
+    const out = [];
+    for (const e of ents) {
+      const p = out[out.length-1];
+      if (p && p[0] === 'L' && e[0] === 'L') {
+        const a = p[1], b = p[2], c = e[2];
+        const cross = (b[0]-a[0])*(c[1]-a[1]) - (b[1]-a[1])*(c[0]-a[0]);
+        if (Math.abs(cross) < 1e-3 * Math.max(1, len(a, c))) { out[out.length-1] = ['L', a, c]; continue; }
+      }
+      out.push(e);
+    }
+    // round coordinates
+    const R = p => [r3(p[0]), r3(p[1])];
+    return { ents: out.map(e => e[0] === 'L' ? ['L', R(e[1]), R(e[2])] : ['A', R(e[1]), R(e[2]), R(e[3]), r3(e[4])]) };
+  }
+
+  function polyArea(p) { let a = 0; for (let i = 0; i < p.length; i++) { const q = p[(i+1)%p.length]; a += p[i][0]*q[1] - q[0]*p[i][1]; } return a/2; }
+  function bbox(p) { let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9; for (const q of p) { x0=Math.min(x0,q[0]); y0=Math.min(y0,q[1]); x1=Math.max(x1,q[0]); y1=Math.max(y1,q[1]); } return [x0,y0,x1,y1]; }
+
+  // analyze one view
+  // opts: {K (mm per pt), mirrorX (bool), mirrorY(bool), origin: [cx,cy] in pt or null (auto=outer bbox center)}
+  function analyzeView(segs, rect, widthSet, opts) {
+    const S = segsInRect(segs, rect, widthSet);
+    const { loops, open } = buildLoops(S);
+    if (!loops.length) return { error: '닫힌 윤곽을 찾지 못했습니다. 영역 또는 선 굵기 설정을 확인하세요.' };
+    // outer = largest bbox
+    let outerIdx = 0, best = -1;
+    loops.forEach((l, i) => { const b = bbox(l); const a = (b[2]-b[0])*(b[3]-b[1]); if (a > best) { best = a; outerIdx = i; } });
+    const ob = bbox(loops[outerIdx]);
+    const cx = (ob[0]+ob[2])/2, cy = (ob[1]+ob[3])/2;
+    const K = opts.K, sx = opts.mirrorX ? -1 : 1, sy = opts.mirrorY ? -1 : 1;
+    const toMM = p => [sx * (p[0]-cx) * K, -sy * (p[1]-cy) * K];
+    const fromMM = p => [cx + sx * p[0] / K, cy - sy * p[1] / K];
+    const circles = [], profiles = [];
+    loops.forEach((l, i) => {
+      let mm = l.map(toMM);
+      if (polyArea(mm) < 0) mm.reverse();
+      const r = toEntities(mm);
+      if (r.circle) { const pc = fitCircle(l); circles.push({ x: r.circle.x, y: r.circle.y, d: r3(2*r.circle.r), pt: [pc.cx, pc.cy, pc.r] }); return; }
+      const b = bbox(mm);
+      profiles.push({ ents: r.ents, mm, bbox: b.map(r3), area: Math.abs(polyArea(mm)), outer: i === outerIdx, nArc: r.ents.filter(e=>e[0]==='A').length, nLine: r.ents.filter(e=>e[0]==='L').length, src: l });
+    });
+    profiles.sort((a, b) => b.area - a.area);
+    return { profiles, circles, openCount: open.length, center: [cx, cy], fromMM, segCount: S.length };
+  }
+
+  return { extractSegments, analyzeView, fitCircle, toEntities, polyArea, bbox };
+})();
+
+
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+const URLS = { worker: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js', replicad: 'https://cdn.jsdelivr.net/npm/replicad@1.1.0/dist/replicad.js', ocjs: 'https://cdn.jsdelivr.net/npm/replicad-opencascadejs@1.1.0/dist/replicad_single.js', ocwasm: 'https://cdn.jsdelivr.net/npm/replicad-opencascadejs@1.1.0/dist/replicad_single.wasm' };
+
+const $ = s => document.querySelector(s);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const fmt = (v, d=2) => (Math.round(v*10**d)/10**d).toString();
+const busy = (on, msg) => { $('#busy').style.display = on ? 'flex' : 'none'; if (msg) $('#busyMsg').textContent = msg; };
+
+// ---------- materials ----------
+const MATS = [['Al 6061-T6',2.70],['Al 5052',2.68],['Al 7075',2.81],['Al 6063',2.69],['SUS304',7.93],['SUS316',7.98],['SS400 / S45C',7.85],['Cu (C1100)',8.94],['Ti Gr2',4.51],['PEEK',1.32],['직접 입력',null]];
+$('#mat').innerHTML = MATS.map((m,i)=>`<option value="${i}">${m[0]}</option>`).join('');
+$('#mat').value = 1; $('#dens').value = 2.68;
+$('#mat').onchange = () => { const m = MATS[$('#mat').value]; if (m[1]) $('#dens').value = m[1]; invalidateBuild(); };
+
+// ---------- state ----------
+const S = {
+  pdf: null, fileName: '', page: 1, segs: {}, bitmaps: {}, pageSize: {},
+  views: { top: null, bottom: null, side: null }, // {page, rect:[x0,y0,x1,y1] pt}
+  widths: null, scaleN: 1,
+  an: { top: null, bottom: null },
+  pcfg: {}, hcfg: {},
+  shape: null, mode: 'pan'
+};
+
+// ---------- engine (OpenCascade via replicad) ----------
+// wasm(23MB) 위치 우선순위: 같은 폴더 → jsDelivr → unpkg
+let R = null;
+async function fetchWasm(urls) {
+  for (const u of urls) {
+    try {
+      const res = await fetch(u); if (!res.ok) throw new Error(res.status);
+      const total = +res.headers.get('content-length') || 23e6; const rd = res.body.getReader(); const parts = []; let got = 0;
+      for (;;) { const { done, value } = await rd.read(); if (done) break; parts.push(value); got += value.length;
+        $('#eng').textContent = `3D 엔진 다운로드 ${Math.min(99, Math.round(got/total*100))}%`; }
+      const buf = new Uint8Array(got); let o = 0; for (const p of parts) { buf.set(p, o); o += p.length; }
+      return buf.buffer;
+    } catch (e) { console.warn('wasm load fail', u, e); }
+  }
+  throw new Error('3D 엔진 파일(wasm)을 받을 수 없습니다. 인터넷 연결을 확인하세요.');
+}
+async function importFirst(urls) { let err; for (const u of urls) { try { return await import(u); } catch (e) { err = e; console.warn('import fail', u, e); } } throw err; }
+(async () => {
+  try {
+    R = await importFirst([URLS.replicad, URLS.replicad.replace('https://cdn.jsdelivr.net/npm/', 'https://unpkg.com/')]);
+    const ocmod = await importFirst([URLS.ocjs, URLS.ocjs.replace('https://cdn.jsdelivr.net/npm/', 'https://unpkg.com/')]);
+    const wasmBinary = await fetchWasm(['./replicad_single.wasm', URLS.ocwasm, URLS.ocwasm.replace('https://cdn.jsdelivr.net/npm/', 'https://unpkg.com/')].filter((v,i,a)=>a.indexOf(v)===i));
+    $('#eng').textContent = '3D 엔진 초기화 중…';
+    const oc = await ocmod.default({ wasmBinary, locateFile: () => URLS.ocwasm });
+    R.setOC(oc);
+    $('#eng').textContent = '3D 엔진 준비됨'; $('#eng').className = 'pill ok';
+    refreshButtons();
+  } catch (e) {
+    console.error(e); $('#eng').textContent = '3D 엔진 로딩 실패'; $('#eng').className = 'pill err';
+    $('#eng').title = String(e.message || e);
+  }
+})();
+
+// ---------- pdf.js ----------
+let workerReady = (async () => {
+  const t = await (await fetch(URLS.worker)).text();
+  pdfjsLib.GlobalWorkerOptions.workerSrc = URL.createObjectURL(new Blob([t], { type: 'text/javascript' }));
+})();
+
+async function openPdf(file) {
+  busy(true, 'PDF 읽는 중…');
+  try {
+    await workerReady;
+    const buf = new Uint8Array(await file.arrayBuffer());
+    const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+    Object.assign(S, { pdf, fileName: file.name, segs: {}, bitmaps: {}, pageSize: {}, views: { top:null, bottom:null, side:null }, an: { top:null, bottom:null }, pcfg: {}, hcfg: {}, widths: null });
+    invalidateBuild();
+    $('#fname').textContent = file.name;
+    $('#pno').value = file.name.replace(/\.pdf$/i, '');
+    $('#pageSel').innerHTML = Array.from({ length: pdf.numPages }, (_, i) => `<option value="${i+1}">페이지 ${i+1} / ${pdf.numPages}</option>`).join('');
+    $('#drop').style.display = 'none';
+    let total = 0;
+    for (let p = 1; p <= pdf.numPages; p++) { await loadPage(p); total += S.segs[p].length; }
+    if (total === 0) note('#viewInfo', 'err', '이 PDF에는 벡터 선이 없습니다 (스캔 PDF로 보입니다). 변환할 수 없습니다.');
+    await guessFromText();
+    buildWidthSelect();
+    await showPage(1);
+    setMode('top');
+  } catch (e) { console.error(e); alert('PDF를 열 수 없습니다: ' + e.message); }
+  busy(false);
+}
+async function loadPage(p) {
+  const page = await S.pdf.getPage(p);
+  S.segs[p] = await CORE.extractSegments(page, pdfjsLib.OPS);
+  const vp = page.getViewport({ scale: 1 });
+  S.pageSize[p] = [vp.width, vp.height];
+}
+async function renderBitmap(p) {
+  if (S.bitmaps[p]) return S.bitmaps[p];
+  const page = await S.pdf.getPage(p);
+  const RS = 3, vp = page.getViewport({ scale: RS });
+  const c = document.createElement('canvas'); c.width = vp.width; c.height = vp.height;
+  await page.render({ canvasContext: c.getContext('2d'), viewport: vp }).promise;
+  S.bitmaps[p] = c; return c;
+}
+async function guessFromText() {
+  let scale = null, weight = null;
+  for (let p = 1; p <= S.pdf.numPages && !(scale && weight); p++) {
+    const tc = await (await S.pdf.getPage(p)).getTextContent();
+    const items = tc.items.map(it => ({ s: it.str.trim(), x: it.transform[4], y: it.transform[5] })).filter(i => i.s);
+    for (const it of items) { const m = it.s.match(/^1\s*[:：]\s*(\d+(?:\.\d+)?)$/); if (m && !scale) scale = +m[1]; }
+    const w = items.find(i => /^WEIGHT$/i.test(i.s));
+    if (w && !weight) {
+      const cand = items.filter(i => /^\d+(\.\d+)?$/.test(i.s) && Math.abs(i.y - w.y) < 4 && i.x > w.x && i.x - w.x < 160).sort((a,b)=>a.x-b.x)[0];
+      if (cand) weight = +cand.s;
+    }
+  }
+  if (scale) { $('#scaleN').value = scale; S.scaleN = scale; $('#scaleHint').textContent = `도면 표기 1:${scale} 자동 인식`; }
+  else $('#scaleHint').textContent = '도면에서 축척을 찾지 못함 — 직접 입력';
+  if (weight) $('#dw').value = weight;
+}
+function buildWidthSelect() {
+  const cnt = {};
+  for (const p in S.segs) for (const s of S.segs[p]) cnt[s.w] = (cnt[s.w] || 0) + 1;
+  const ws = Object.keys(cnt).map(Number).sort((a,b)=>b-a);
+  const def = ws.find(w => cnt[w] >= 100) ?? ws[0];
+  $('#wSel').innerHTML = ws.map(w => `<option value="${w}">${w} pt (${cnt[w]}개)</option>`).join('') + `<option value="all">전체</option>`;
+  $('#wSel').value = def; S.widths = new Set([def]);
+}
+
+// ---------- canvas view ----------
+const cv = $('#cv'), ctx = cv.getContext('2d');
+let Z = 1, PX = 0, PY = 0, hover = null, dragRect = null;
+function fitCanvas() { const r = $('#stage').getBoundingClientRect(); cv.width = r.width * devicePixelRatio; cv.height = r.height * devicePixelRatio; }
+async function showPage(p) { S.page = p; $('#pageSel').value = p; await renderBitmap(p); fitView(); }
+function fitView() {
+  if (!S.pdf) return; fitCanvas();
+  const [w, h] = S.pageSize[S.page];
+  Z = Math.min(cv.width / w, cv.height / h) * 0.97; PX = (cv.width - w*Z)/2; PY = (cv.height - h*Z)/2; draw();
+}
+const toScr = (x, y) => [x*Z + PX, y*Z + PY];
+const toPt = (sx, sy) => [(sx - PX)/Z, (sy - PY)/Z];
+
+const PCOL = { outer:'#111827', thru:'#dc2626', boss:'#2563eb', pocket:'#7c3aed', pocket_bot:'#db2777', ignore:'#c4c9d0', dup:'#c4c9d0', none:'#f59e0b' };
+const PLAB = { outer:'외형', thru:'관통', boss:'보스·림 (상면 위로 높이)', pocket:'포켓 (위에서 깊이)', pocket_bot:'하면 포켓 (아래서 깊이)', ignore:'무시', dup:'무시 (상면도와 중복)', none:'미지정' };
+const HCOL = ['#dc2626','#2563eb','#059669','#d97706','#7c3aed','#db2777','#0891b2','#65a30d','#9333ea','#ea580c'];
+$('#legP').innerHTML = ['outer','boss','pocket','thru','pocket_bot','none'].map(k=>`<span><i class="chip" style="background:${PCOL[k]}"></i>${PLAB[k].split(' ')[0]}</span>`).join('');
+
+function draw() {
+  if (!S.pdf) return;
+  ctx.setTransform(1,0,0,1,0,0); ctx.clearRect(0,0,cv.width,cv.height);
+  const bm = S.bitmaps[S.page]; const [w, h] = S.pageSize[S.page];
+  if (bm) { ctx.globalAlpha = 0.55; ctx.drawImage(bm, PX, PY, w*Z, h*Z); ctx.globalAlpha = 1; }
+  const vcol = { top:'#1f5fbf', bottom:'#c2410c', side:'#0f766e' };
+  for (const k of ['top','bottom','side']) {
+    const v = S.views[k]; if (!v || v.page !== S.page) continue;
+    const [a, b] = [toScr(v.rect[0], v.rect[1]), toScr(v.rect[2], v.rect[3])];
+    ctx.strokeStyle = vcol[k]; ctx.lineWidth = 1.5*devicePixelRatio; ctx.setLineDash([6,4]); ctx.strokeRect(a[0], a[1], b[0]-a[0], b[1]-a[1]); ctx.setLineDash([]);
+    ctx.fillStyle = vcol[k]; ctx.font = `${12*devicePixelRatio}px sans-serif`; ctx.fillText({top:'상면도',bottom:'하면도',side:'측면도'}[k], a[0]+4, a[1]-5);
+  }
+  for (const k of ['top','bottom']) {
+    const an = S.an[k], v = S.views[k]; if (!an || !v || v.page !== S.page || an.error) continue;
+    an.profiles.forEach((p, i) => {
+      const id = `${k}-P${i}`, t = (S.pcfg[id] || {}).type || 'none', hl = hover === id;
+      ctx.strokeStyle = hl ? '#facc15' : PCOL[t]; ctx.lineWidth = (hl ? 5 : (t==='ignore'||t==='dup'?1.2:2.4)) * devicePixelRatio;
+      ctx.beginPath(); p.src.forEach((q, j) => { const s = toScr(q[0], q[1]); j ? ctx.lineTo(s[0], s[1]) : ctx.moveTo(s[0], s[1]); }); ctx.closePath(); ctx.stroke();
+    });
+    for (const g of an.groups) {
+      const hl = hover === g.id, cfg = S.hcfg[g.id] || {}; const ign = cfg.type === 'ignore' || cfg.type === 'dup';
+      ctx.strokeStyle = hl ? '#facc15' : (ign ? '#c4c9d0' : g.color); ctx.lineWidth = (hl ? 4 : 2) * devicePixelRatio;
+      for (const c of g.items) { const s = toScr(c.pt[0], c.pt[1]); ctx.beginPath(); ctx.arc(s[0], s[1], Math.max(c.pt[2]*Z, 2.5*devicePixelRatio) + (hl?2:0), 0, Math.PI*2); ctx.stroke(); }
+    }
+  }
+  if (dragRect) { const [a,b] = dragRect; ctx.strokeStyle = '#1f5fbf'; ctx.lineWidth = 1.5*devicePixelRatio; ctx.fillStyle = 'rgba(31,95,191,.08)';
+    ctx.fillRect(a[0],a[1],b[0]-a[0],b[1]-a[1]); ctx.strokeRect(a[0],a[1],b[0]-a[0],b[1]-a[1]); }
+}
+cv.addEventListener('wheel', e => { e.preventDefault(); const r = cv.getBoundingClientRect(); const sx = (e.clientX-r.left)*devicePixelRatio, sy = (e.clientY-r.top)*devicePixelRatio;
+  const f = Math.exp(-e.deltaY * 0.0015); const [x, y] = toPt(sx, sy); Z *= f; PX = sx - x*Z; PY = sy - y*Z; draw(); }, { passive: false });
+let drag = null;
+cv.addEventListener('mousedown', e => { const r = cv.getBoundingClientRect(); const p = [(e.clientX-r.left)*devicePixelRatio, (e.clientY-r.top)*devicePixelRatio];
+  if (S.mode === 'pan' || e.button === 1) { drag = { pan: true, p, PX, PY }; cv.classList.add('dragging'); } else { drag = { pan: false, p }; dragRect = [p, p]; } });
+window.addEventListener('mousemove', e => {
+  const r = cv.getBoundingClientRect(); const p = [(e.clientX-r.left)*devicePixelRatio, (e.clientY-r.top)*devicePixelRatio];
+  if (drag) { if (drag.pan) { PX = drag.PX + p[0]-drag.p[0]; PY = drag.PY + p[1]-drag.p[1]; } else dragRect = [drag.p, p]; draw(); return; }
+  if (e.target === cv) { const h = hitTest(p); if (h !== hover) { hover = h; draw(); highlightRow(); } }
+});
+window.addEventListener('mouseup', e => {
+  if (!drag) return; cv.classList.remove('dragging');
+  if (!drag.pan && dragRect) {
+    const [a, b] = dragRect.map(q => toPt(q[0], q[1]));
+    const rect = [Math.min(a[0],b[0]), Math.min(a[1],b[1]), Math.max(a[0],b[0]), Math.max(a[1],b[1])];
+    dragRect = null;
+    if (rect[2]-rect[0] > 5 && rect[3]-rect[1] > 5) { S.views[S.mode] = { page: S.page, rect }; setMode('pan'); reanalyze(); }
+  }
+  drag = null; draw();
+});
+cv.addEventListener('click', () => { if (hover) { const el = document.querySelector(`[data-id="${hover}"]`); if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' }); } });
+function hitTest(p) {
+  const [x, y] = toPt(p[0], p[1]); const tol = 5 / Z * devicePixelRatio;
+  for (const k of ['top','bottom']) { const an = S.an[k], v = S.views[k]; if (!an || an.error || !v || v.page !== S.page) continue;
+    for (const g of an.groups) for (const c of g.items) if (Math.hypot(c.pt[0]-x, c.pt[1]-y) < c.pt[2] + tol) return g.id;
+    for (let i = an.profiles.length-1; i >= 0; i--) { const s = an.profiles[i].src;
+      for (let j = 0; j < s.length; j++) { const a = s[j], b = s[(j+1)%s.length]; if (distSeg(x, y, a, b) < tol) return `${k}-P${i}`; } } }
+  return null;
+}
+function distSeg(x, y, a, b) { const dx=b[0]-a[0], dy=b[1]-a[1]; const L=dx*dx+dy*dy; let t = L ? ((x-a[0])*dx+(y-a[1])*dy)/L : 0; t=Math.max(0,Math.min(1,t)); return Math.hypot(a[0]+t*dx-x, a[1]+t*dy-y); }
+function highlightRow() { document.querySelectorAll('tr[data-id]').forEach(tr => tr.classList.toggle('hl', tr.dataset.id === hover)); }
+
+function setMode(m) {
+  S.mode = m;
+  $('#mTop').classList.toggle('on', m === 'top'); $('#mBot').classList.toggle('on', m === 'bottom'); $('#mSide').classList.toggle('on', m === 'side');
+  cv.classList.toggle('rect', m !== 'pan');
+  $('#toolHint').textContent = m === 'pan' ? '휠: 확대/축소 · 드래그: 이동 · 선/홀에 마우스를 올리면 목록에서 강조' :
+    `${{top:'상면도',bottom:'하면도',side:'측면도'}[m]}를 감싸도록 드래그하세요 (치수선은 들어가도 괜찮습니다) · 휠 확대 가능 · Esc 취소`;
+}
+$('#mTop').onclick = () => setMode('top');
+$('#mBot').onclick = () => setMode('bottom');
+$('#mSide').onclick = () => setMode('side');
+window.addEventListener('keydown', e => { if (e.key === 'Escape') { dragRect = null; drag = null; setMode('pan'); draw(); } });
+$('#bFit').onclick = fitView;
+$('#pageSel').onchange = e => showPage(+e.target.value);
+window.addEventListener('resize', () => { if (S.pdf) { const z = Z; fitCanvas(); draw(); } });
+
+// ---------- analysis ----------
+const TAP = [[2.5,'M3'],[3.3,'M4'],[4.2,'M5'],[5.0,'M6'],[6.8,'M8'],[8.5,'M10'],[10.2,'M12'],[1.6,'M2'],[2.05,'M2.5']];
+function tapHint(d) { const t = TAP.find(t => Math.abs(t[0]-d) < 0.06); return t ? `${t[1]} 탭 드릴 추정` : ''; }
+
+function reanalyze() {
+  invalidateBuild();
+  S.scaleN = +$('#scaleN').value || 1;
+  const K = 0.3527778 * S.scaleN;
+  const wv = $('#wSel').value; S.widths = wv === 'all' ? null : new Set([+wv]);
+  for (const k of ['top','bottom']) {
+    const v = S.views[k]; if (!v) { S.an[k] = null; continue; }
+    S.an[k] = CORE.analyzeView(S.segs[v.page], v.rect, S.widths, { K, mirrorX: k === 'bottom' && $('#mirSel').value === 'X', mirrorY: k === 'bottom' && $('#mirSel').value === 'Y' });
+  }
+  sideAnalyze(K);
+  classify();
+  renderInfo(); renderProfiles(); renderHoles(); draw(); refreshButtons();
+}
+function sideAnalyze(K) {
+  const v = S.views.side; if (!v) { $('#sideInfo').textContent = ''; return; }
+  const segs = S.segs[v.page].filter(s => (!S.widths || S.widths.has(s.w)) && [s.a, s.b].every(p => p[0]>=v.rect[0]&&p[0]<=v.rect[2]&&p[1]>=v.rect[1]&&p[1]<=v.rect[3]));
+  if (!segs.length) { $('#sideInfo').textContent = '측면도에서 선을 찾지 못함'; return; }
+  let x0=1e9,x1=-1e9,y0=1e9,y1=-1e9; for (const s of segs) for (const p of [s.a,s.b]) { x0=Math.min(x0,p[0]);x1=Math.max(x1,p[0]);y0=Math.min(y0,p[1]);y1=Math.max(y1,p[1]); }
+  const vert = (y1-y0) > (x1-x0); // tall view -> thickness along x
+  const pos = new Set();
+  for (const s of segs) { const along = vert ? Math.abs(s.a[0]-s.b[0]) < 0.01 : Math.abs(s.a[1]-s.b[1]) < 0.01; if (along) pos.add(Math.round(((vert ? s.a[0]-x0 : y1-s.a[1]) * K) * 100) / 100); }
+  const list = [...pos].sort((a,b)=>a-b);
+  $('#sideInfo').textContent = `측면도 선 위치: ${list.join(' / ')} mm`;
+}
+function classify() {
+  const top = S.an.top, bot = S.an.bottom;
+  const near = (a, b, t=0.15) => Math.abs(a-b) < t;
+  // profiles
+  for (const k of ['top','bottom']) { const an = S.an[k]; if (!an || an.error) continue;
+    an.profiles.forEach((p, i) => { const id = `${k}-P${i}`; if (S.pcfg[id]) return;
+      let type = 'none';
+      if (k === 'top' && p.outer) type = 'outer';
+      else if (k === 'bottom' && p.outer) type = 'dup';
+      else if (k === 'bottom' && top && !top.error && top.profiles.some(q => q.bbox.every((v, j) => near(v, p.bbox[j], 0.3)))) type = 'dup';
+      S.pcfg[id] = { type, val: '' , ref: 'top' }; });
+  }
+  // holes
+  for (const k of ['top','bottom']) { const an = S.an[k]; if (!an || an.error) continue;
+    const other = k === 'top' ? bot : top;
+    for (const c of an.circles) {
+      c.match = !!(other && !other.error && other.circles.some(o => near(o.x, c.x) && near(o.y, c.y) && near(o.d, c.d, 0.06)));
+      c.cbBig = an.circles.some(o => o !== c && near(o.x, c.x, 0.05) && near(o.y, c.y, 0.05) && o.d < c.d - 0.1);
+    }
+    const g = new Map();
+    for (const c of an.circles) { const key = `${c.d.toFixed(2)}|${c.match?1:0}|${c.cbBig?1:0}`; if (!g.has(key)) g.set(key, []); g.get(key).push(c); }
+    an.groups = [...g.entries()].sort((a,b)=>a[1][0].d-b[1][0].d).map(([key, items], i) => {
+      const [d, m, cb] = key.split('|'); const id = `${k}-H${d}-${m}${cb}`;
+      return { id, d: +d, match: m === '1', cbBig: cb === '1', items, color: HCOL[i % HCOL.length] + (k==='bottom'?'':'') };
+    });
+    for (const gr of an.groups) { if (S.hcfg[gr.id]) continue;
+      let type;
+      if (k === 'top') type = gr.match ? 'thru' : (gr.cbBig ? 'cb_top' : 'blind_top');
+      else type = gr.match ? 'dup' : (gr.cbBig ? 'cb_bot' : 'blind_bot');
+      S.hcfg[gr.id] = { type, depth: '' };
+    }
+  }
+}
+function note(sel, cls, html) { $(sel).innerHTML = `<div class="note ${cls}">${html}</div>`; }
+function renderInfo() {
+  const out = [];
+  for (const k of ['top','bottom']) { const an = S.an[k]; const nm = k==='top'?'상면도':'하면도';
+    if (!S.views[k]) { if (k==='top') out.push(`<div class="note warn">상면도 영역을 드래그로 지정하세요.</div>`); continue; }
+    if (an.error) { out.push(`<div class="note err">${nm}: ${an.error}</div>`); continue; }
+    const o = an.profiles.find(p => p.outer); const W = o.bbox[2]-o.bbox[0], H = o.bbox[3]-o.bbox[1];
+    out.push(`<div class="note info">${nm}: 외형 <b>${fmt(W)} × ${fmt(H)}</b> mm · 윤곽 ${an.profiles.length} · 홀 ${an.circles.length}${an.openCount?` · 닫히지 않은 선 묶음 ${an.openCount}개 제외`:''}</div>`);
+  }
+  if (S.an.top && !S.an.top.error) out.push(`<div class="muted">외형 치수가 도면 치수와 맞는지 확인하세요. 다르면 축척을 수정하세요.</div>`);
+  $('#viewInfo').innerHTML = out.join('');
+}
+function profDesc(p) {
+  const W = p.bbox[2]-p.bbox[0], H = p.bbox[3]-p.bbox[1];
+  const radii = [...new Set(p.ents.filter(e=>e[0]==='A').map(e=>fmt(e[4],1)))];
+  return `${fmt(W,1)} × ${fmt(H,1)}` + (radii.length ? ` <span class="tag">R ${radii.slice(0,4).join(', ')}${radii.length>4?'…':''}</span>` : '');
+}
+function renderProfiles() {
+  const rows = [];
+  for (const k of ['top','bottom']) { const an = S.an[k]; if (!an || an.error) continue;
+    an.profiles.forEach((p, i) => { const id = `${k}-P${i}`, c = S.pcfg[id];
+      const opts = (p.outer && k==='top') ? ['outer'] : (k==='top' ? ['none','thru','boss','pocket','pocket_bot','ignore'] : ['none','dup','pocket_bot','thru','ignore']);
+      const needVal = ['boss','pocket','pocket_bot'].includes(c.type);
+      const need = c.type === 'none' || (needVal && !(+c.val > 0));
+      rows.push(`<tr data-id="${id}" class="${need?'need':''}"><td><i class="chip" style="background:${PCOL[c.type]}"></i></td>
+        <td><span class="tag ${k==='top'?'b':'o'}">${k==='top'?'상':'하'}</span>${profDesc(p)}</td>
+        <td><select data-p="${id}" data-f="type">${opts.map(o=>`<option value="${o}" ${o===c.type?'selected':''}>${PLAB[o]}</option>`).join('')}</select></td>
+        <td>${needVal?`<input type="number" step="any" data-p="${id}" data-f="val" value="${esc(c.val)}" placeholder="${c.type==='boss'?'높이':'깊이'}">`:''}
+        ${c.type==='pocket'?`<select data-p="${id}" data-f="ref" title="깊이 기준면"><option value="top" ${c.ref==='top'?'selected':''}>최상면 기준</option><option value="T" ${c.ref==='T'?'selected':''}>판 상면 기준</option></select>`:''}</td></tr>`);
+    });
+  }
+  $('#profTbl').innerHTML = rows.length ? `<table><tr><th></th><th>크기 (mm)</th><th>유형</th><th>값</th></tr>${rows.join('')}</table>
+    <div class="muted" style="margin-top:6px">예) 폭 5 × 높이 5 림: 바깥 윤곽 = 보스 5, 안쪽 윤곽 = 포켓 5(최상면 기준)</div>` : '<span class="muted">윤곽 없음</span>';
+  bindCfg('#profTbl', 'p', S.pcfg, renderProfiles);
+}
+const HLAB = { thru:'관통', blind_top:'상면 막힘', blind_bot:'하면 막힘', cb_top:'카운터보어 (상면)', cb_bot:'카운터보어 (하면)', ignore:'무시', dup:'무시 (상면도와 중복)' };
+function renderHoles() {
+  const rows = [];
+  for (const k of ['top','bottom']) { const an = S.an[k]; if (!an || an.error) continue;
+    for (const g of an.groups) { const c = S.hcfg[g.id];
+      const needD = ['blind_top','blind_bot','cb_top','cb_bot'].includes(c.type);
+      const need = needD && !(+c.depth > 0);
+      const tags = [];
+      if (g.match) tags.push('<span class="tag">상·하면 모두 보임</span>'); else tags.push(`<span class="tag">${k==='top'?'상면도에만':'하면도에만'}</span>`);
+      if (g.cbBig) tags.push('<span class="tag">동심 큰 원 → 카운터보어 추정</span>');
+      const th = tapHint(g.d); if (th) tags.push(`<span class="tag">${th}</span>`);
+      const opts = k === 'top' ? ['thru','blind_top','cb_top','ignore'] : ['dup','blind_bot','cb_bot','thru','ignore'];
+      rows.push(`<tr data-id="${g.id}" class="${need?'need':''}"><td><i class="chip" style="background:${g.color}"></i></td>
+        <td><span class="tag ${k==='top'?'b':'o'}">${k==='top'?'상':'하'}</span><b>Ø${fmt(g.d)}</b> × ${g.items.length}<div>${tags.join('')}</div></td>
+        <td><select data-h="${g.id}" data-f="type">${opts.map(o=>`<option value="${o}" ${o===c.type?'selected':''}>${HLAB[o]}</option>`).join('')}</select></td>
+        <td>${needD?`<input type="number" step="any" data-h="${g.id}" data-f="depth" value="${esc(c.depth)}" placeholder="깊이">`:''}</td></tr>`);
+    }
+  }
+  $('#holeTbl').innerHTML = rows.length ? `<table><tr><th></th><th>홀</th><th>유형</th><th>깊이</th></tr>${rows.join('')}</table>
+    <div class="muted" style="margin-top:6px">막힘 깊이는 드릴(모델) 깊이입니다. 도면의 탭 깊이(DP)와 구분하세요. 카운터보어는 작은 관통홀과 별도로 지정됩니다.</div>` : '<span class="muted">홀 없음</span>';
+  bindCfg('#holeTbl', 'h', S.hcfg, renderHoles);
+}
+function bindCfg(sel, attr, store, rerender) {
+  $(sel).querySelectorAll(`[data-${attr}]`).forEach(el => {
+    const id = el.dataset[attr], f = el.dataset.f;
+    el.onchange = () => { store[id][f] = el.value; invalidateBuild(); if (f !== 'val' && f !== 'depth') rerender(); else el.closest('tr').classList.toggle('need', !(+el.value > 0)); draw(); refreshButtons(); };
+    el.onmouseenter = () => { hover = id; draw(); };
+  });
+  $(sel).querySelectorAll('tr[data-id]').forEach(tr => { tr.onmouseenter = () => { hover = tr.dataset.id; draw(); highlightRow(); }; tr.onmouseleave = () => { hover = null; draw(); highlightRow(); }; });
+}
+['#scaleN','#wSel','#mirSel'].forEach(s => $(s).addEventListener('change', () => { if (s !== '#scaleN') {} S.pcfg = s==='#mirSel' ? S.pcfg : S.pcfg; reanalyze(); }));
+['#T','#dens','#dw'].forEach(s => $(s).addEventListener('input', () => { invalidateBuild(); refreshButtons(); }));
+
+// ---------- build ----------
+function issues() {
+  const errs = [], warns = [];
+  if (!S.an.top || S.an.top.error) errs.push('상면도 영역을 지정하세요.');
+  if (!(+$('#T').value > 0)) errs.push('판 두께를 입력하세요.');
+  for (const k of ['top','bottom']) { const an = S.an[k]; if (!an || an.error) continue;
+    an.profiles.forEach((p, i) => { const c = S.pcfg[`${k}-P${i}`];
+      if (c.type === 'none') warns.push(`미지정 윤곽(${fmt(p.bbox[2]-p.bbox[0],1)}×${fmt(p.bbox[3]-p.bbox[1],1)})은 무시됩니다.`);
+      if (['boss','pocket','pocket_bot'].includes(c.type) && !(+c.val > 0)) errs.push(`윤곽(${fmt(p.bbox[2]-p.bbox[0],1)}×${fmt(p.bbox[3]-p.bbox[1],1)})의 높이/깊이를 입력하세요.`); });
+    for (const g of an.groups) { const c = S.hcfg[g.id]; if (['blind_top','blind_bot','cb_top','cb_bot'].includes(c.type) && !(+c.depth > 0)) errs.push(`Ø${fmt(g.d)} × ${g.items.length} 홀의 깊이를 입력하세요.`); }
+  }
+  return { errs, warns };
+}
+function refreshButtons() { $('#bBuild').disabled = !R || !S.an.top || !!S.an.top?.error; $('#bStep').disabled = !S.shape; }
+function invalidateBuild() { if (S.shape) { S.shape = null; $('#result').innerHTML = '<div class="note warn">설정이 바뀌었습니다. 다시 3D 생성을 누르세요.</div>'; } refreshButtons(); }
+
+function drawEnts(ents) {
+  const E = ents.filter(e => Math.hypot(e[e.length - (e[0]==='A'?2:1)][0]-e[1][0], e[e.length-(e[0]==='A'?2:1)][1]-e[1][1]) > 1e-4);
+  let pen = R.draw(E[0][1]);
+  for (const e of E) pen = e[0] === 'L' ? pen.lineTo(e[2]) : pen.threePointsArcTo(e[3], e[2]);
+  return pen.close();
+}
+function pip(pt, poly) { let c = false; for (let i = 0, j = poly.length-1; i < poly.length; j = i++) { const a = poly[i], b = poly[j];
+  if ((a[1] > pt[1]) !== (b[1] > pt[1]) && pt[0] < (b[0]-a[0])*(pt[1]-a[1])/(b[1]-a[1]) + a[0]) c = !c; } return c; }
+
+async function build() {
+  const { errs, warns } = issues();
+  if (errs.length) { $('#result').innerHTML = `<div class="note err">${errs.map(esc).join('<br>')}</div>`; return; }
+  busy(true, '3D 형상 생성 중…'); await new Promise(r => setTimeout(r, 30));
+  const t0 = performance.now();
+  try {
+    const T = +$('#T').value; const top = S.an.top;
+    const all = [];
+    for (const k of ['top','bottom']) { const an = S.an[k]; if (!an || an.error) continue; an.profiles.forEach((p, i) => all.push({ p, c: S.pcfg[`${k}-P${i}`] })); }
+    const outer = top.profiles.find(p => p.outer);
+    let body = drawEnts(outer.ents).sketchOnPlane('XY', 0).extrude(T);
+    // adds
+    const bosses = [];
+    for (const { p, c } of all) if (c.type === 'boss') { const h = +c.val; body = body.fuse(drawEnts(p.ents).sketchOnPlane('XY', T).extrude(h)); bosses.push({ poly: p.mm, z: T + h }); }
+    const Ztop = Math.max(T, ...bosses.map(b => b.z));
+    const cuts = [];
+    for (const { p, c } of all) {
+      let z0, z1;
+      if (c.type === 'thru') { z0 = -1; z1 = Ztop + 1; }
+      else if (c.type === 'pocket') { const base = c.ref === 'T' ? T : Ztop; z0 = base - (+c.val); z1 = Ztop + 1; cuts.push({ poly: p.mm, z: z0 }); }
+      else if (c.type === 'pocket_bot') { z0 = -1; z1 = +c.val; }
+      else continue;
+      body = body.cut(drawEnts(p.ents).sketchOnPlane('XY', z0).extrude(z1 - z0));
+    }
+    // local top surface at a point
+    const localTop = pt => { let z = T; for (const b of bosses) if (pip(pt, b.poly)) z = Math.max(z, b.z); for (const c of cuts) if (pip(pt, c.poly) && c.z < z) z = c.z; return z; };
+    const cyl = (x, y, d, z0, z1) => R.makeCylinder(d/2, z1 - z0, [x, y, z0]);
+    const holeLog = [];
+    for (const k of ['top','bottom']) { const an = S.an[k]; if (!an || an.error) continue;
+      for (const g of an.groups) { const c = S.hcfg[g.id]; const dp = +c.depth; let tool = null;
+        if (['ignore','dup'].includes(c.type)) continue;
+        for (const h of g.items) {
+          let z0, z1;
+          if (c.type === 'thru') { z0 = -1; z1 = Ztop + 1; }
+          else if (c.type === 'blind_top' || c.type === 'cb_top') { const zt = localTop([h.x, h.y]); z0 = zt - dp; z1 = Ztop + 1; }
+          else { z0 = -1; z1 = dp; }
+          const t = cyl(h.x, h.y, g.d, z0, z1); tool = tool ? tool.fuse(t) : t;
+        }
+        if (tool) { body = body.cut(tool); holeLog.push(`Ø${fmt(g.d)}×${g.items.length} ${HLAB[c.type]}${dp?` ${dp}`:''}`); }
+      }
+    }
+    S.shape = body;
+    const vol = R.measureVolume(body);
+    const kg = vol * (+$('#dens').value || 0) / 1e6;
+    const dw = +$('#dw').value;
+    const bb = body.boundingBox;
+    let cmp = '';
+    if (dw > 0 && kg > 0) { const diff = (kg - dw) / dw * 100;
+      const cls = Math.abs(diff) <= 2 ? 'ok' : Math.abs(diff) <= 5 ? 'warn' : 'err';
+      const msg = cls === 'ok' ? '도면 중량과 일치 — 형상 해석이 맞을 가능성이 높습니다.' : cls === 'warn' ? '차이가 있습니다. 홀 깊이·보스/포켓 지정을 확인하세요.' : '차이가 큽니다. 윤곽 유형(보스/포켓) 또는 두께·재질을 확인하세요.';
+      cmp = `<div class="note ${cls}">도면 ${fmt(dw,3)} kg 대비 <b>${diff>=0?'+':''}${fmt(diff,1)}%</b> · ${msg}</div>`; }
+    $('#result').innerHTML = `<div class="res"><div>계산 중량</div><div class="big">${fmt(kg,3)} kg</div>
+      <div>부피</div><div>${fmt(vol/1000,1)} cm³</div>
+      <div>외곽 크기</div><div>${fmt(bb.width,2)} × ${fmt(bb.height,2)} × ${fmt(bb.depth,2)} mm</div>
+      <div>홀</div><div>${holeLog.map(esc).join('<br>') || '-'}</div>
+      <div>생성 시간</div><div>${fmt((performance.now()-t0)/1000,1)} 초</div></div>${cmp}
+      ${warns.length?`<div class="note warn">${warns.map(esc).join('<br>')}</div>`:''}`;
+    show3D(body); setTab('3d');
+  } catch (e) {
+    console.error(e); S.shape = null;
+    $('#result').innerHTML = `<div class="note err">형상 생성 실패: ${esc(e.message || e)}<br>윤곽 지정(보스/포켓 겹침) 또는 깊이 값을 확인하세요.</div>`;
+  }
+  busy(false); refreshButtons();
+}
+$('#bBuild').onclick = build;
+$('#bStep').onclick = () => {
+  if (!S.shape) return;
+  const blob = S.shape.blobSTEP();
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+  a.download = (($('#pno').value || 'part').replace(/[\\/:*?"<>|]/g, '_')) + '.step'; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+};
+
+// ---------- 3D view ----------
+let three = null;
+function initThree() {
+  const el = $('#three');
+  const renderer = new THREE.WebGLRenderer({ antialias: true }); renderer.setPixelRatio(devicePixelRatio);
+  el.appendChild(renderer.domElement);
+  const scene = new THREE.Scene(); scene.background = new THREE.Color('#f3f5f8');
+  const cam = new THREE.PerspectiveCamera(35, 1, 1, 20000); cam.up.set(0, 0, 1);
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x8a94a3, 1.4));
+  const dl = new THREE.DirectionalLight(0xffffff, 1.6); dl.position.set(300, -400, 800); scene.add(dl);
+  const ctl = new OrbitControls(cam, renderer.domElement);
+  const grp = new THREE.Group(); scene.add(grp);
+  three = { renderer, scene, cam, ctl, grp, el };
+  const loop = () => { const r = el.getBoundingClientRect(); if (r.width && (renderer.domElement.width !== Math.round(r.width*devicePixelRatio) || renderer.domElement.height !== Math.round(r.height*devicePixelRatio))) { renderer.setSize(r.width, r.height); cam.aspect = r.width / r.height; cam.updateProjectionMatrix(); }
+    ctl.update(); renderer.render(scene, cam); requestAnimationFrame(loop); };
+  loop();
+}
+function show3D(shape) {
+  if (!three) initThree();
+  const { grp, cam, ctl } = three; grp.clear();
+  const m = shape.mesh({ tolerance: 0.05, angularTolerance: 12 });
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(m.vertices, 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(m.normals, 3));
+  g.setIndex(m.triangles);
+  grp.add(new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: 0xb8c3cf, metalness: 0.35, roughness: 0.45, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 })));
+  const e = shape.meshEdges({ tolerance: 0.05, angularTolerance: 12 });
+  const eg = new THREE.BufferGeometry(); eg.setAttribute('position', new THREE.Float32BufferAttribute(e.lines, 3));
+  grp.add(new THREE.LineSegments(eg, new THREE.LineBasicMaterial({ color: 0x1d2a3a })));
+  g.computeBoundingSphere(); const s = g.boundingSphere;
+  ctl.target.copy(s.center); cam.position.set(s.center.x + s.radius*1.3, s.center.y - s.radius*1.7, s.center.z + s.radius*1.6); ctl.update();
+}
+function setTab(t) {
+  document.querySelectorAll('.tab').forEach(x => x.classList.toggle('on', x.dataset.t === t));
+  $('#cv').style.display = t === 'pdf' ? '' : 'none'; $('#tools').style.visibility = t === 'pdf' ? '' : 'hidden';
+  $('#three').style.display = t === '3d' ? '' : 'none';
+  if (t === '3d' && !three) { initThree(); }
+  if (t === 'pdf') { fitCanvas(); draw(); }
+}
+document.querySelectorAll('.tab').forEach(x => x.onclick = () => setTab(x.dataset.t));
+
+// ---------- open / drop ----------
+$('#bOpen').onclick = $('#bOpen2').onclick = () => $('#fi').click();
+$('#fi').onchange = e => { if (e.target.files[0]) openPdf(e.target.files[0]); e.target.value = ''; };
+const stage = $('#stage');
+stage.addEventListener('dragover', e => { e.preventDefault(); $('#drop').classList.add('over'); });
+stage.addEventListener('dragleave', () => $('#drop').classList.remove('over'));
+stage.addEventListener('drop', e => { e.preventDefault(); $('#drop').classList.remove('over'); const f = [...e.dataTransfer.files].find(f => /pdf$/i.test(f.name)); if (f) openPdf(f); });
+
+// ---------- config save/load ----------
+$('#bSaveCfg').onclick = () => {
+  const cfg = { v: 1, file: S.fileName, views: S.views, scaleN: +$('#scaleN').value, width: $('#wSel').value, mirror: $('#mirSel').value,
+    T: $('#T').value, mat: $('#mat').value, dens: $('#dens').value, dw: $('#dw').value, pno: $('#pno').value, pcfg: S.pcfg, hcfg: S.hcfg };
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(cfg, null, 1)], { type: 'application/json' }));
+  a.download = ($('#pno').value || 'part') + '_변환설정.json'; a.click();
+};
+$('#bLoadCfg').onclick = () => $('#cfgFi').click();
+$('#cfgFi').onchange = async e => {
+  const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+  if (!S.pdf) { alert('먼저 PDF를 여세요.'); return; }
+  try { const c = JSON.parse(await f.text());
+    S.views = c.views; $('#scaleN').value = c.scaleN; $('#wSel').value = c.width; $('#mirSel').value = c.mirror;
+    $('#T').value = c.T; $('#mat').value = c.mat; $('#dens').value = c.dens; $('#dw').value = c.dw; $('#pno').value = c.pno;
+    S.pcfg = c.pcfg || {}; S.hcfg = c.hcfg || {};
+    if (S.views.top) await showPage(S.views.top.page);
+    reanalyze();
+  } catch (err) { alert('설정 파일을 읽을 수 없습니다: ' + err.message); }
+};
+
+window.__S = S; // debug
+</script>
+</body>
+</html>
