@@ -242,44 +242,59 @@ const CORE = (() => {
     return segs.filter(s => (!widthSet || widthSet.has(s.w)) && inside(s.a) && inside(s.b) && len(s.a, s.b) > 1e-6);
   }
 
-  // build chains by endpoint matching (tol in pt)
-  function buildLoops(segs, tolPt = 0.05) {
+  // build closed loops from segments (tol in pt)
+  //  1) 끝점 일치(tolPt)  2) 미세 틈(gapPt 이내) 상호 최근접 끝점 연결
+  //  3) 매달린 가지 제거  4) 분기점(T자)에서는 가장 곧게 이어지는 쪽으로 따라가 닫힌 고리 추출
+  function buildLoops(segs, tolPt = 0.05, gapPt = 1.2) {
     const key = p => Math.round(p[0]/tolPt) + ',' + Math.round(p[1]/tolPt);
-    // dedupe
-    const seen = new Set(); const S = [];
+    const seen = new Set(); let S = [];
     for (const s of segs) { const k1 = key(s.a), k2 = key(s.b); const k = k1 < k2 ? k1+'|'+k2 : k2+'|'+k1;
       if (k1 === k2 || seen.has(k)) continue; seen.add(k); S.push({ a: s.a, b: s.b, ka: k1, kb: k2 }); }
-    const adj = new Map();
-    S.forEach((s, i) => { for (const k of [s.ka, s.kb]) { if (!adj.has(k)) adj.set(k, []); adj.get(k).push(i); } });
-    const used = new Uint8Array(S.length);
-    const loops = [], open = [];
+    const pos = new Map(); for (const e of S) { if (!pos.has(e.ka)) pos.set(e.ka, e.a); if (!pos.has(e.kb)) pos.set(e.kb, e.b); }
+    const degOf = () => { const d = new Map(); for (const e of S) { d.set(e.ka, (d.get(e.ka)||0)+1); d.set(e.kb, (d.get(e.kb)||0)+1); } return d; };
+    // 2) gap closing: mutual nearest dangling endpoints
+    let gapsClosed = 0;
+    { const deg = degOf(); const ends = [...deg.entries()].filter(e => e[1] === 1).map(e => e[0]);
+      const cell = gapPt, grid = new Map(), gk = (x, y) => Math.floor(x/cell) + ',' + Math.floor(y/cell);
+      for (const k of ends) { const p = pos.get(k), g = gk(p[0], p[1]); if (!grid.has(g)) grid.set(g, []); grid.get(g).push(k); }
+      const segOf = new Map(); for (const e of S) { segOf.set(e.ka, e); segOf.set(e.kb, e); }
+      const nearest = k => { const p = pos.get(k); const cx = Math.floor(p[0]/cell), cy = Math.floor(p[1]/cell); let best = null, bd = gapPt;
+        for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (const q of grid.get((cx+dx)+','+(cy+dy)) || []) {
+          if (q === k) continue; const e = segOf.get(k); if (e && (e.ka === q || e.kb === q)) continue;
+          const d = len(p, pos.get(q)); if (d < bd) { bd = d; best = q; } }
+        return best; };
+      const done = new Set();
+      for (const k of ends) { if (done.has(k)) continue; const q = nearest(k); if (!q || done.has(q) || nearest(q) !== k) continue;
+        done.add(k); done.add(q); S.push({ a: pos.get(k), b: pos.get(q), ka: k, kb: q, gap: 1 }); gapsClosed++; }
+    }
+    // 3) prune dangling branches
+    const open = [];
+    for (;;) { const deg = degOf(); const keep = [], drop = [];
+      for (const e of S) (deg.get(e.ka) === 1 || deg.get(e.kb) === 1 ? drop : keep).push(e);
+      if (!drop.length) break; open.push(...drop); S = keep; }
+    // 4) trace loops
+    const adj = new Map(); S.forEach((e, i) => { for (const k of [e.ka, e.kb]) { if (!adj.has(k)) adj.set(k, []); adj.get(k).push(i); } });
+    const used = new Uint8Array(S.length); const loops = [];
+    const other = (i, k) => S[i].ka === k ? S[i].kb : S[i].ka;
+    const ang = (k1, k2) => { const a = pos.get(k1), b = pos.get(k2); return Math.atan2(b[1]-a[1], b[0]-a[0]); };
     for (let i = 0; i < S.length; i++) {
       if (used[i]) continue;
-      // collect component
-      const comp = []; const stack = [i]; used[i] = 1;
-      while (stack.length) { const j = stack.pop(); comp.push(j);
-        for (const k of [S[j].ka, S[j].kb]) for (const n of adj.get(k)) if (!used[n]) { used[n] = 1; stack.push(n); } }
-      // closed simple loop if every node degree == 2
-      const nodes = new Map();
-      for (const j of comp) for (const k of [S[j].ka, S[j].kb]) nodes.set(k, (nodes.get(k)||0) + 1);
-      const simple = [...nodes.values()].every(d => d === 2);
-      if (!simple) {
-        // try to split: extract cycles greedily is complex; keep as open/complex
-        open.push(comp.map(j => S[j])); continue;
-      }
-      // order
-      const pts = []; let cur = S[comp[0]].ka, prevSeg = -1;
-      const pos = new Map(); for (const j of comp) { pos.set(S[j].ka, S[j].a); pos.set(S[j].kb, S[j].b); }
-      for (let guard = 0; guard <= comp.length; guard++) {
+      const startK = S[i].ka; let cur = S[i].kb, prevK = startK; used[i] = 1;
+      const ids = [i]; const pts = [pos.get(startK)]; let closed = false;
+      for (let guard = 0; guard < S.length; guard++) {
+        if (cur === startK) { closed = true; break; }
         pts.push(pos.get(cur));
-        const nexts = adj.get(cur).filter(n => n !== prevSeg && comp.includes(n));
-        const n = nexts[0]; if (n === undefined) break;
-        const nk = S[n].ka === cur ? S[n].kb : S[n].ka; prevSeg = n; cur = nk;
-        if (cur === S[comp[0]].ka) break;
+        const cand = adj.get(cur).filter(n => !used[n]);
+        if (!cand.length) break;
+        let n = cand[0];
+        if (cand.length > 1) { const a0 = ang(prevK, cur); let best = 1e9;
+          for (const c of cand) { let d = ang(cur, other(c, cur)) - a0; while (d > Math.PI) d -= 2*Math.PI; while (d < -Math.PI) d += 2*Math.PI;
+            if (Math.abs(d) < best) { best = Math.abs(d); n = c; } } }
+        used[n] = 1; ids.push(n); prevK = cur; cur = other(n, cur);
       }
-      loops.push(pts);
+      if (closed && pts.length >= 3) loops.push(pts); else open.push(...ids.map(j => S[j]));
     }
-    return { loops, open };
+    return { loops, open, gapsClosed };
   }
 
   // polyline (mm, closed) -> entities [['L',a,b] | ['A',a,mid,b,r]]
@@ -355,7 +370,7 @@ const CORE = (() => {
   // opts: {K (mm per pt), mirrorX (bool), mirrorY(bool), origin: [cx,cy] in pt or null (auto=outer bbox center)}
   function analyzeView(segs, rect, widthSet, opts) {
     const S = segsInRect(segs, rect, widthSet);
-    const { loops, open } = buildLoops(S);
+    const { loops, open, gapsClosed } = buildLoops(S);
     if (!loops.length) return { error: '닫힌 윤곽을 찾지 못했습니다. 영역 또는 선 굵기 설정을 확인하세요.' };
     // outer = largest bbox
     let outerIdx = 0, best = -1;
@@ -383,8 +398,11 @@ const CORE = (() => {
       const b = bbox(mm);
       profiles.push({ ents: r.ents, mm, bbox: b.map(r3), area: Math.abs(polyArea(mm)), outer: i === outerIdx, nArc: r.ents.filter(e=>e[0]==='A').length, nLine: r.ents.filter(e=>e[0]==='L').length, src: l });
     });
+    // 노이즈 제거: 삼각형(화살촉·교차선이 틈 연결로 닫힌 것), 극소 면적
+    for (let i = profiles.length - 1; i >= 0; i--) { const p = profiles[i];
+      if (!p.outer && ((p.nArc === 0 && p.nLine <= 3) || p.area < 2)) profiles.splice(i, 1); }
     profiles.sort((a, b) => b.area - a.area);
-    return { profiles, circles, openCount: open.length, center: [cx, cy], fromMM, segCount: S.length };
+    return { profiles, circles, openCount: open.length, gapsClosed, center: [cx, cy], fromMM, segCount: S.length };
   }
 
   return { extractSegments, analyzeView, fitCircle, toEntities, polyArea, bbox };
@@ -403,7 +421,7 @@ const fmt = (v, d=2) => (Math.round(v*10**d)/10**d).toString();
 const busy = (on, msg) => { $('#busy').style.display = on ? 'flex' : 'none'; if (msg) $('#busyMsg').textContent = msg; };
 
 // ---------- materials ----------
-const MATS = [['Al 6061-T6',2.70],['Al 5052',2.68],['Al 7075',2.81],['Al 6063',2.69],['SUS304',7.93],['SUS316',7.98],['SS400 / S45C',7.85],['Cu (C1100)',8.94],['Ti Gr2',4.51],['PEEK',1.32],['직접 입력',null]];
+const MATS = [['Al 6061-T6',2.70],['Al 5052',2.68],['Al 7075',2.81],['Al 6063',2.69],['SUS304',7.93],['SUS316',7.98],['SS400 / S45C',7.85],['Cu (C1100)',8.94],['Ti Gr2',4.51],['Nickel 201',8.89],['Inconel 600',8.47],['PEEK',1.32],['직접 입력',null]];
 $('#mat').innerHTML = MATS.map((m,i)=>`<option value="${i}">${m[0]}</option>`).join('');
 $('#mat').value = 1; $('#dens').value = 2.68;
 $('#mat').onchange = () => { const m = MATS[$('#mat').value]; if (m[1]) $('#dens').value = m[1]; invalidateBuild(); };
@@ -686,6 +704,8 @@ function renderInfo() {
     if (!S.views[k]) { if (k==='top') out.push(`<div class="note warn">상면도 영역을 드래그로 지정하세요.</div>`); continue; }
     if (an.error) { out.push(`<div class="note err">${nm}: ${an.error}</div>`); continue; }
     const o = an.profiles.find(p => p.outer); const W = o.bbox[2]-o.bbox[0], H = o.bbox[3]-o.bbox[1];
+    { const v = S.views[k], K = 0.3527778 * S.scaleN; const rs = Math.min(v.rect[2]-v.rect[0], v.rect[3]-v.rect[1]) * K;
+      if (Math.max(W, H) < rs * 0.3) out.push(`<div class="note err">${nm}: 가장 큰 닫힌 윤곽이 ${fmt(W)} × ${fmt(H)} mm로 지정 영역에 비해 너무 작습니다. 외곽선이 끊겨 외형을 찾지 못한 것으로 보입니다. 선 굵기를 바꾸거나 영역을 다시 지정하세요.</div>`); }
     out.push(`<div class="note info">${nm}: 외형 <b>${fmt(W)} × ${fmt(H)}</b> mm · 윤곽 ${an.profiles.length} · 홀 ${an.circles.length}${an.openCount?` · 닫히지 않은 선 묶음 ${an.openCount}개 제외`:''}</div>`);
   }
   if (S.an.top && !S.an.top.error) out.push(`<div class="muted">외형 치수가 도면 치수와 맞는지 확인하세요. 다르면 축척을 수정하세요.</div>`);
@@ -715,32 +735,33 @@ function renderProfiles() {
     <div class="muted" style="margin-top:6px">예) 폭 5 × 높이 5 림: 바깥 윤곽 = 보스 5, 안쪽 윤곽 = 포켓 5(최상면 기준)</div>` : '<span class="muted">윤곽 없음</span>';
   bindCfg('#profTbl', 'p', S.pcfg, renderProfiles);
 }
-const HLAB = { thru:'관통', blind_top:'상면 막힘', blind_bot:'하면 막힘', cb_top:'카운터보어 (상면)', cb_bot:'카운터보어 (하면)', ignore:'무시', dup:'무시 (상면도와 중복)' };
+const HLAB = { thru:'관통', blind_top:'상면 막힘', blind_bot:'하면 막힘', cb_top:'카운터보어 (상면)', cb_bot:'카운터보어 (하면)', thru_cb_top:'관통 + 카운터보어 (상면)', thru_cb_bot:'관통 + 카운터보어 (하면)', ignore:'무시', dup:'무시 (상면도와 중복)' };
 function renderHoles() {
   const rows = [];
   for (const k of ['top','bottom']) { const an = S.an[k]; if (!an || an.error) continue;
     for (const g of an.groups) { const c = S.hcfg[g.id];
-      const needD = ['blind_top','blind_bot','cb_top','cb_bot'].includes(c.type);
-      const need = needD && !(+c.depth > 0);
+      const isTcb = c.type === 'thru_cb_top' || c.type === 'thru_cb_bot';
+      const needD = ['blind_top','blind_bot','cb_top','cb_bot'].includes(c.type) || isTcb;
+      const need = (needD && !(+c.depth > 0)) || (isTcb && !(+c.cbd > g.d));
       const tags = [];
       if (g.match) tags.push('<span class="tag">상·하면 모두 보임</span>'); else tags.push(`<span class="tag">${k==='top'?'상면도에만':'하면도에만'}</span>`);
       if (g.cbBig) tags.push('<span class="tag">동심 큰 원 → 카운터보어 추정</span>');
       const th = tapHint(g.d); if (th) tags.push(`<span class="tag">${th}</span>`);
-      const opts = k === 'top' ? ['thru','blind_top','cb_top','ignore'] : ['dup','blind_bot','cb_bot','thru','ignore'];
+      const opts = k === 'top' ? ['thru','thru_cb_top','thru_cb_bot','blind_top','cb_top','ignore'] : ['dup','blind_bot','cb_bot','thru','thru_cb_bot','ignore'];
       rows.push(`<tr data-id="${g.id}" class="${need?'need':''}"><td><i class="chip" style="background:${g.color}"></i></td>
         <td><span class="tag ${k==='top'?'b':'o'}">${k==='top'?'상':'하'}</span><b>Ø${fmt(g.d)}</b> × ${g.items.length}<div>${tags.join('')}</div></td>
         <td><select data-h="${g.id}" data-f="type">${opts.map(o=>`<option value="${o}" ${o===c.type?'selected':''}>${HLAB[o]}</option>`).join('')}</select></td>
-        <td>${needD?`<input type="number" step="any" data-h="${g.id}" data-f="depth" value="${esc(c.depth)}" placeholder="깊이 mm">`:''}</td></tr>`);
+        <td style="white-space:nowrap">${isTcb?`<span class="muted">Ø</span> <input type="number" step="any" data-h="${g.id}" data-f="cbd" value="${esc(c.cbd||'')}" placeholder="지름" title="카운터보어 지름" style="margin-bottom:3px"><br><span class="muted">깊이</span> `:''}${needD?`<input type="number" step="any" data-h="${g.id}" data-f="depth" value="${esc(c.depth)}" placeholder="${isTcb?'깊이':'깊이 mm'}">`:''}</td></tr>`);
     }
   }
   $('#holeTbl').innerHTML = rows.length ? `<table><tr><th></th><th>홀</th><th>유형</th><th>깊이 (mm)</th></tr>${rows.join('')}</table>
-    <div class="muted" style="margin-top:6px">막힘 깊이는 드릴(모델) 깊이입니다. 도면의 탭 깊이(DP)와 구분하세요. 카운터보어는 작은 관통홀과 별도로 지정됩니다.</div>` : '<span class="muted">홀 없음</span>';
+    <div class="muted" style="margin-top:6px">막힘 깊이는 드릴(모델) 깊이입니다. 도면의 탭 깊이(DP)와 구분하세요. 카운터보어는 작은 관통홀과 별도로 지정됩니다. 카운터보어 원이 도면에 따로 안 그려져 있으면(호로만 보이거나 주기로만 표기) "관통 + 카운터보어"를 고르고 지름·깊이를 입력하세요.</div>` : '<span class="muted">홀 없음</span>';
   bindCfg('#holeTbl', 'h', S.hcfg, renderHoles);
 }
 function bindCfg(sel, attr, store, rerender) {
   $(sel).querySelectorAll(`[data-${attr}]`).forEach(el => {
     const id = el.dataset[attr], f = el.dataset.f;
-    el.onchange = () => { store[id][f] = el.value; invalidateBuild(); if (f !== 'val' && f !== 'depth') rerender(); else el.closest('tr').classList.toggle('need', !(+el.value > 0)); draw(); refreshButtons(); };
+    el.onchange = () => { store[id][f] = el.value; invalidateBuild(); if (!['val','depth','cbd'].includes(f)) rerender(); else el.closest('tr').classList.toggle('need', [...el.closest('tr').querySelectorAll('input')].some(i => !(+i.value > 0))); draw(); refreshButtons(); };
     el.onmouseenter = () => { hover = id; draw(); };
   });
   $(sel).querySelectorAll('tr[data-id]').forEach(tr => { tr.onmouseenter = () => { hover = tr.dataset.id; draw(); highlightRow(); }; tr.onmouseleave = () => { hover = null; draw(); highlightRow(); }; });
@@ -757,7 +778,9 @@ function issues() {
     an.profiles.forEach((p, i) => { const c = S.pcfg[`${k}-P${i}`];
       if (c.type === 'none') warns.push(`미지정 윤곽(${fmt(p.bbox[2]-p.bbox[0],1)}×${fmt(p.bbox[3]-p.bbox[1],1)})은 무시됩니다.`);
       if (['boss','pocket','pocket_bot'].includes(c.type) && !(+c.val > 0)) errs.push({ id: `${k}-P${i}`, msg: `③ 윤곽 지정: ${p.circleD ? 'Ø'+fmt(p.circleD) : fmt(p.bbox[2]-p.bbox[0],1)+'×'+fmt(p.bbox[3]-p.bbox[1],1)} 의 높이/깊이를 입력하세요.` }); });
-    for (const g of an.groups) { const c = S.hcfg[g.id]; if (['blind_top','blind_bot','cb_top','cb_bot'].includes(c.type) && !(+c.depth > 0)) errs.push({ id: g.id, msg: `④ 홀 지정: Ø${fmt(g.d)} × ${g.items.length} 의 깊이를 "깊이" 칸에 입력하세요.` }); }
+    for (const g of an.groups) { const c = S.hcfg[g.id]; if (['blind_top','blind_bot','cb_top','cb_bot'].includes(c.type) && !(+c.depth > 0)) errs.push({ id: g.id, msg: `④ 홀 지정: Ø${fmt(g.d)} × ${g.items.length} 의 깊이를 "깊이" 칸에 입력하세요.` });
+      if (['thru_cb_top','thru_cb_bot'].includes(c.type)) { if (!(+c.depth > 0)) errs.push({ id: g.id, msg: `④ 홀 지정: Ø${fmt(g.d)} × ${g.items.length} 의 카운터보어 깊이를 입력하세요.` });
+        if (!(+c.cbd > g.d)) errs.push({ id: g.id, msg: `④ 홀 지정: Ø${fmt(g.d)} × ${g.items.length} 의 카운터보어 지름(홀보다 커야 함)을 입력하세요.` }); } }
   }
   return { errs, warns };
 }
@@ -809,12 +832,16 @@ async function build() {
         if (['ignore','dup'].includes(c.type)) continue;
         for (const h of g.items) {
           let z0, z1;
+          if (c.type === 'thru_cb_top' || c.type === 'thru_cb_bot') {
+            const cb = c.type === 'thru_cb_top' ? (() => { const zt = localTop([h.x, h.y]); return cyl(h.x, h.y, +c.cbd, zt - dp, Ztop + 1); })() : cyl(h.x, h.y, +c.cbd, -1, dp);
+            const t = cyl(h.x, h.y, g.d, -1, Ztop + 1).fuse(cb); tool = tool ? tool.fuse(t) : t; continue;
+          }
           if (c.type === 'thru') { z0 = -1; z1 = Ztop + 1; }
           else if (c.type === 'blind_top' || c.type === 'cb_top') { const zt = localTop([h.x, h.y]); z0 = zt - dp; z1 = Ztop + 1; }
           else { z0 = -1; z1 = dp; }
           const t = cyl(h.x, h.y, g.d, z0, z1); tool = tool ? tool.fuse(t) : t;
         }
-        if (tool) { body = body.cut(tool); holeLog.push(`Ø${fmt(g.d)}×${g.items.length} ${HLAB[c.type]}${dp?` ${dp}`:''}`); }
+        if (tool) { body = body.cut(tool); holeLog.push(`Ø${fmt(g.d)}×${g.items.length} ${HLAB[c.type]}${c.cbd && c.type.startsWith('thru_cb') ? ` Ø${c.cbd}` : ''}${dp?` 깊이 ${dp}`:''}`); }
       }
     }
     S.shape = body;
