@@ -398,6 +398,22 @@ const CORE = (() => {
       const b = bbox(mm);
       profiles.push({ ents: r.ents, mm, bbox: b.map(r3), area: Math.abs(polyArea(mm)), outer: i === outerIdx, nArc: r.ents.filter(e=>e[0]==='A').length, nLine: r.ents.filter(e=>e[0]==='L').length, src: l });
     });
+    // 홀 주변 동심 호 감지 (원으로 닫히지 않은 카운터보어·노치 R) — 예: 링 폭보다 큰 C'BORE가 호로만 그려진 경우
+    for (const c of circles) {
+      const [hx, hy, hr] = c.pt; const buckets = new Map();
+      for (const sg of S) {
+        const d1 = Math.hypot(sg.a[0]-hx, sg.a[1]-hy); if (d1 < hr*1.1 || d1 > hr*4) continue;
+        const d2 = Math.hypot(sg.b[0]-hx, sg.b[1]-hy); if (Math.abs(d1-d2) > 0.03) continue;
+        const mx = (sg.a[0]+sg.b[0])/2, my = (sg.a[1]+sg.b[1])/2; const dm = Math.hypot(mx-hx, my-hy);
+        const rr = (d1+d2)/2; const L = len(sg.a, sg.b);
+        if (L < 1e-3 || Math.abs(dm - Math.sqrt(Math.max(0, rr*rr - L*L/4))) > 0.03) continue; // 현이 원 위에 있는지
+        const kk = Math.round(rr * K * 20) / 20; // 0.05mm 단위
+        buckets.set(kk, (buckets.get(kk) || 0) + L / rr);
+      }
+      let best = null, bang = 0;
+      for (const [kk, ang] of buckets) if (ang > bang) { bang = ang; best = kk; }
+      if (best && bang > 0.8) c.arcR = r3(best);   // 합계 약 45° 이상
+    }
     // 노이즈 제거: 삼각형(화살촉·교차선이 틈 연결로 닫힌 것), 극소 면적
     for (let i = profiles.length - 1; i >= 0; i--) { const p = profiles[i];
       if (!p.outer && ((p.nArc === 0 && p.nLine <= 3) || p.area < 2)) profiles.splice(i, 1); }
@@ -682,17 +698,20 @@ function classify() {
     for (const c of an.circles) {
       c.match = !!(other && !other.error && other.circles.some(o => near(o.x, c.x) && near(o.y, c.y) && near(o.d, c.d, 0.06)));
       c.cbBig = an.circles.some(o => o !== c && near(o.x, c.x, 0.05) && near(o.y, c.y, 0.05) && o.d < c.d - 0.1);
+      // 동심 호(arcR): 같은 위치에 닫힌 큰 원이 있으면 그 원의 일부이므로 제외
+      c.arc = c.arcR && !an.circles.some(o => o !== c && near(o.x, c.x, 0.05) && near(o.y, c.y, 0.05) && near(o.d, 2*c.arcR, 0.1)) ? c.arcR : 0;
     }
     const g = new Map();
-    for (const c of an.circles) { const key = `${c.d.toFixed(2)}|${c.match?1:0}|${c.cbBig?1:0}`; if (!g.has(key)) g.set(key, []); g.get(key).push(c); }
+    for (const c of an.circles) { const key = `${c.d.toFixed(2)}|${c.match?1:0}|${c.cbBig?1:0}|${c.arc||0}`; if (!g.has(key)) g.set(key, []); g.get(key).push(c); }
     an.groups = [...g.entries()].sort((a,b)=>a[1][0].d-b[1][0].d).map(([key, items], i) => {
-      const [d, m, cb] = key.split('|'); const id = `${k}-H${d}-${m}${cb}`;
-      return { id, d: +d, match: m === '1', cbBig: cb === '1', items, color: HCOL[i % HCOL.length] + (k==='bottom'?'':'') };
+      const [d, m, cb, ar] = key.split('|'); const id = `${k}-H${d}-${m}${cb}` + (+ar ? `-R${ar}` : '');
+      return { id, d: +d, match: m === '1', cbBig: cb === '1', arcR: +ar, items, color: HCOL[i % HCOL.length] + (k==='bottom'?'':'') };
     });
     for (const gr of an.groups) { if (S.hcfg[gr.id]) continue;
       let type;
       if (k === 'top') type = gr.match ? 'thru' : (gr.cbBig ? 'cb_top' : 'blind_top');
       else type = gr.match ? 'dup' : (gr.cbBig ? 'cb_bot' : 'blind_bot');
+      if (gr.arcR && !gr.cbBig) { type = k === 'top' ? 'thru_cb_top' : 'thru_cb_bot'; S.hcfg[gr.id] = { type, depth: '', cbd: String(Math.round(gr.arcR*2*1000)/1000) }; continue; }
       S.hcfg[gr.id] = { type, depth: '' };
     }
   }
@@ -746,6 +765,7 @@ function renderHoles() {
       const tags = [];
       if (g.match) tags.push('<span class="tag">상·하면 모두 보임</span>'); else tags.push(`<span class="tag">${k==='top'?'상면도에만':'하면도에만'}</span>`);
       if (g.cbBig) tags.push('<span class="tag">동심 큰 원 → 카운터보어 추정</span>');
+      if (g.arcR && !g.cbBig) tags.push(`<span class="tag o">R${fmt(g.arcR)} 동심 호 감지 → C'BORE Ø${fmt(g.arcR*2)} 자동 입력 · 방향(상/하)·깊이는 측면도 확인</span>`);
       const th = tapHint(g.d); if (th) tags.push(`<span class="tag">${th}</span>`);
       const opts = k === 'top' ? ['thru','thru_cb_top','thru_cb_bot','blind_top','cb_top','ignore'] : ['dup','blind_bot','cb_bot','thru','thru_cb_bot','ignore'];
       rows.push(`<tr data-id="${g.id}" class="${need?'need':''}"><td><i class="chip" style="background:${g.color}"></i></td>
