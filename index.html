@@ -110,7 +110,7 @@ td input[type=number]{width:72px;padding:3px 5px;border:1px solid var(--line);bo
     </section>
     <section>
       <h2><span class="n">2</span>기본 형상</h2>
-      <div class="row"><label>판 두께</label><input type="number" id="T" step="any" placeholder="mm"> mm <span class="muted" id="sideInfo"></span></div>
+      <div class="row"><label>판 두께·전체 높이</label><input type="number" id="T" step="any" placeholder="mm"> mm <span class="muted" id="sideInfo"></span></div>
       <div class="row"><label>재질</label><select id="mat"></select><input type="number" id="dens" step="any" style="width:70px"> g/cm³</div>
       <div class="row"><label>도면 중량</label><input type="number" id="dw" step="any" placeholder="kg"> kg <span class="muted">형상 검증용</span></div>
       <div class="row"><label>품번(파일명)</label><input type="text" id="pno" class="wide"></div>
@@ -118,6 +118,7 @@ td input[type=number]{width:72px;padding:3px 5px;border:1px solid var(--line);bo
     <section>
       <h2><span class="n">3</span>윤곽 지정</h2>
       <div class="legend" id="legP"></div>
+      <div id="bandBox"></div>
       <div id="profTbl" class="muted">상면도 영역을 지정하면 윤곽이 표시됩니다.</div>
     </section>
     <section>
@@ -384,7 +385,10 @@ const CORE = (() => {
     loops.forEach((l, i) => {
       let mm = l.map(toMM);
       if (polyArea(mm) < 0) mm.reverse();
-      const r = toEntities(mm);
+      let r = toEntities(mm);
+      // 분절·교차선 때문에 원으로 판정 못 한 경우: 전체 점이 한 원 위에 있으면 원으로 처리
+      if (!r.circle && mm.length >= 12) { const fc = fitCircle(mm);
+        if (fc && fc.res < 0.03) r = { circle: { x: r3(fc.cx), y: r3(fc.cy), r: r3(fc.r) } }; }
       // 외형이거나 외형 대비 큰 원(링 내경·단차 등)은 홀이 아닌 윤곽으로 취급
       const span = Math.max(ob[2]-ob[0], ob[3]-ob[1]) * K;
       if (r.circle && (i === outerIdx || 2*r.circle.r > 0.25*span)) {
@@ -398,6 +402,34 @@ const CORE = (() => {
       const b = bbox(mm);
       profiles.push({ ents: r.ents, mm, bbox: b.map(r3), area: Math.abs(polyArea(mm)), outer: i === outerIdx, nArc: r.ents.filter(e=>e[0]==='A').length, nLine: r.ents.filter(e=>e[0]==='L').length, src: l });
     });
+    // 외형이 원이면: 같은 중심의 큰 원이 홀·노치에 끊겨 호로만 남은 경우 복원 (예: 볼트홀이 걸친 단차 지름)
+    { const op = profiles.find(p => p.outer);
+      if (op && op.circleD) { const ocx = (op.bbox[0]+op.bbox[2])/2, ocy = (op.bbox[1]+op.bbox[3])/2;
+        const pc = fromMM([ocx, ocy]); const buckets = new Map();
+        for (const sg of S) {
+          const d1 = Math.hypot(sg.a[0]-pc[0], sg.a[1]-pc[1]), d2 = Math.hypot(sg.b[0]-pc[0], sg.b[1]-pc[1]);
+          if (Math.abs(d1-d2) > 0.03 || d1 * K < 3) continue;
+          const L = len(sg.a, sg.b), rr = (d1+d2)/2; if (L < 1e-3) continue;
+          const mx = (sg.a[0]+sg.b[0])/2, my = (sg.a[1]+sg.b[1])/2;
+          if (Math.abs(Math.hypot(mx-pc[0], my-pc[1]) - Math.sqrt(Math.max(0, rr*rr - L*L/4))) > 0.03) continue;
+          const kk = Math.round(2 * rr * K * 50) / 50; // 지름 0.02mm 단위
+          buckets.set(kk, (buckets.get(kk) || 0) + L / rr);
+        }
+        // 인접 버킷 합치기
+        const keys = [...buckets.keys()].sort((a, b) => a - b); const merged = [];
+        for (const k of keys) { const last = merged[merged.length-1];
+          if (last && k - last.k1 <= 0.041) { last.ang += buckets.get(k); last.k1 = k; last.w += k * buckets.get(k); }
+          else merged.push({ k0: k, k1: k, ang: buckets.get(k), w: k * buckets.get(k) }); }
+        for (const m of merged) { if (m.ang < Math.PI) continue;   // 반 바퀴 이상 남아 있는 것만
+          const D = r3(m.w / m.ang);
+          if (D < 0.25 * op.circleD || D > op.circleD - 0.1) continue;
+          if (profiles.some(p => p.circleD && Math.abs(p.circleD - D) < 0.1)) continue;
+          if (circles.some(c => Math.abs(c.d - D) < 0.06)) continue;
+          const rr = D / 2, x = ocx, y = ocy;
+          const ents = [['A', [r3(x+rr), y], [x, r3(y+rr)], [r3(x-rr), y], rr], ['A', [r3(x-rr), y], [x, r3(y-rr)], [r3(x+rr), y], rr]];
+          const src = []; for (let t = 0; t < 72; t++) { const q = fromMM([x + rr*Math.cos(t*Math.PI/36), y + rr*Math.sin(t*Math.PI/36)]); src.push(q); }
+          profiles.push({ ents, mm: src.map(toMM), bbox: [x-rr, y-rr, x+rr, y+rr].map(r3), area: Math.PI*rr*rr, outer: false, nArc: 2, nLine: 0, src, circleD: D, fromArcs: Math.round(Math.min(1, m.ang / (2*Math.PI)) * 100) });
+        } } }
     // 홀 주변 동심 호 감지 (원으로 닫히지 않은 카운터보어·노치 R) — 예: 링 폭보다 큰 C'BORE가 호로만 그려진 경우
     for (const c of circles) {
       const [hx, hy, hr] = c.pt; const buckets = new Map();
@@ -448,7 +480,7 @@ const S = {
   views: { top: null, bottom: null, side: null }, // {page, rect:[x0,y0,x1,y1] pt}
   widths: null, scaleN: 1,
   an: { top: null, bottom: null },
-  pcfg: {}, hcfg: {},
+  pcfg: {}, hcfg: {}, bands: {}, bandMode: null,
   shape: null, mode: 'pan'
 };
 
@@ -497,7 +529,7 @@ async function openPdf(file) {
     await workerReady;
     const buf = new Uint8Array(await file.arrayBuffer());
     const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
-    Object.assign(S, { pdf, fileName: file.name, segs: {}, bitmaps: {}, pageSize: {}, views: { top:null, bottom:null, side:null }, an: { top:null, bottom:null }, pcfg: {}, hcfg: {}, widths: null });
+    Object.assign(S, { pdf, fileName: file.name, segs: {}, bitmaps: {}, pageSize: {}, views: { top:null, bottom:null, side:null }, an: { top:null, bottom:null }, pcfg: {}, hcfg: {}, bands: {}, bandMode: null, bandTouched: false, widths: null });
     invalidateBuild();
     $('#fname').textContent = file.name;
     $('#pno').value = file.name.replace(/\.pdf$/i, '');
@@ -565,7 +597,7 @@ function fitView() {
 const toScr = (x, y) => [x*Z + PX, y*Z + PY];
 const toPt = (sx, sy) => [(sx - PX)/Z, (sy - PY)/Z];
 
-const PCOL = { outer:'#111827', thru:'#dc2626', boss:'#2563eb', pocket:'#7c3aed', pocket_bot:'#db2777', ignore:'#c4c9d0', dup:'#c4c9d0', none:'#f59e0b' };
+const PCOL = { band:'#0d9488', outer:'#111827', thru:'#dc2626', boss:'#2563eb', pocket:'#7c3aed', pocket_bot:'#db2777', ignore:'#c4c9d0', dup:'#c4c9d0', none:'#f59e0b' };
 const PLAB = { outer:'외형', thru:'관통', boss:'보스·림 (상면 위로 높이)', pocket:'포켓 (위에서 깊이)', pocket_bot:'하면 포켓 (아래서 깊이)', ignore:'무시', dup:'무시 (상면도와 중복)', none:'미지정' };
 const HCOL = ['#dc2626','#2563eb','#059669','#d97706','#7c3aed','#db2777','#0891b2','#65a30d','#9333ea','#ea580c'];
 $('#legP').innerHTML = ['outer','boss','pocket','thru','pocket_bot','none'].map(k=>`<span><i class="chip" style="background:${PCOL[k]}"></i>${PLAB[k].split(' ')[0]}</span>`).join('');
@@ -585,7 +617,8 @@ function draw() {
   for (const k of ['top','bottom']) {
     const an = S.an[k], v = S.views[k]; if (!an || !v || v.page !== S.page || an.error) continue;
     an.profiles.forEach((p, i) => {
-      const id = `${k}-P${i}`, t = (S.pcfg[id] || {}).type || 'none', hl = hover === id;
+      const id = `${k}-P${i}`, hl = hover === id;
+      const t = (bandActive() && concentric().ids.has(id)) ? 'band' : ((S.pcfg[id] || {}).type || 'none');
       ctx.strokeStyle = hl ? '#facc15' : PCOL[t]; ctx.lineWidth = (hl ? 5 : (t==='ignore'||t==='dup'?1.2:2.4)) * devicePixelRatio;
       ctx.beginPath(); p.src.forEach((q, j) => { const s = toScr(q[0], q[1]); j ? ctx.lineTo(s[0], s[1]) : ctx.moveTo(s[0], s[1]); }); ctx.closePath(); ctx.stroke();
     });
@@ -665,7 +698,7 @@ function reanalyze() {
   }
   sideAnalyze(K);
   classify();
-  try { renderInfo(); renderProfiles(); renderHoles(); }
+  try { renderInfo(); renderBands(); renderProfiles(); renderHoles(); }
   catch (e) { console.error(e); note('#viewInfo', 'err', '도면 해석 중 오류: ' + esc(e.message) + ' — 영역을 다시 지정하거나 선 굵기를 바꿔보세요.'); }
   draw(); refreshButtons();
 }
@@ -731,15 +764,66 @@ function renderInfo() {
   $('#viewInfo').innerHTML = out.join('');
 }
 function profDesc(p) {
-  if (p.circleD) return `<b>Ø${fmt(p.circleD)}</b> <span class="tag">원</span>`;
+  if (p.circleD) return `<b>Ø${fmt(p.circleD)}</b> <span class="tag">원</span>${p.fromArcs ? ` <span class="tag o">끊긴 호로 복원 ${p.fromArcs}%</span>` : ''}`;
   const W = p.bbox[2]-p.bbox[0], H = p.bbox[3]-p.bbox[1];
   const radii = [...new Set(p.ents.filter(e=>e[0]==='A').map(e=>fmt(e[4],1)))];
   return `${fmt(W,1)} × ${fmt(H,1)}` + (radii.length ? ` <span class="tag">R ${radii.slice(0,4).join(', ')}${radii.length>4?'…':''}</span>` : '');
 }
+// ---------- 링 단차 (동심원 구간별 높이) ----------
+function concentric() {
+  const top = S.an.top; if (!top || top.error) return null;
+  const outer = top.profiles.find(p => p.outer); if (!outer || !outer.circleD) return null;
+  const cx = (outer.bbox[0]+outer.bbox[2])/2, cy = (outer.bbox[1]+outer.bbox[3])/2;
+  const list = [];
+  for (const k of ['top','bottom']) { const an = S.an[k]; if (!an || an.error) continue;
+    an.profiles.forEach((p, i) => { if (!p.circleD) return;
+      const px = (p.bbox[0]+p.bbox[2])/2, py = (p.bbox[1]+p.bbox[3])/2; if (Math.hypot(px-cx, py-cy) > 0.3) return;
+      const f = list.find(q => Math.abs(q.D - p.circleD) < 0.06);
+      if (f) f.ids.push(`${k}-P${i}`); else list.push({ D: p.circleD, ids: [`${k}-P${i}`] }); }); }
+  list.sort((a, b) => b.D - a.D);
+  return { cx, cy, list, ids: new Set(list.flatMap(q => q.ids)) };
+}
+function bandRows() {
+  const c = concentric(); if (!c || c.list.length < 2) return null;
+  const rows = [];
+  for (let i = 0; i < c.list.length; i++) {
+    const Do = c.list[i].D, Di = i + 1 < c.list.length ? c.list[i+1].D : 0;
+    const key = `${Do}|${Di}`;
+    if (!S.bands[key]) S.bands[key] = { on: Di > 0, a: '', b: '' };
+    rows.push({ key, Do, Di, cfg: S.bands[key] });
+  }
+  return { c, rows };
+}
+function bandActive() { return !!S.bandMode && !!bandRows(); }
+function renderBands() {
+  const br = bandRows();
+  if (!br) { $('#bandBox').innerHTML = ''; return; }
+  if (!S.bandTouched) S.bandMode = br.c.list.length >= 3;  // 사용자가 직접 켜고 끄기 전까지 자동
+  const H = +$('#T').value || 0;
+  let html = `<div class="note info" style="margin-top:0"><label style="cursor:pointer"><input type="checkbox" id="bandOn" ${S.bandMode?'checked':''}> <b>링 단차 모드</b> — 동심원 ${br.c.list.length}개 감지</label><br>
+    <span style="font-size:11.5px">동심원 사이 구간마다 재료가 있는 높이를 단면도 치수로 입력합니다. 기준은 <b>상면(최상단)에서의 거리</b>이고, 빈칸은 0 ~ 전체 높이(판 두께 칸)로 봅니다.</span></div>`;
+  if (S.bandMode) {
+    html += `<table><tr><th>구간 (지름)</th><th>폭</th><th>재료</th><th>상면에서 ~ 까지 (mm)</th></tr>` + br.rows.map(r => {
+      const a = r.cfg.a === '' ? 0 : +r.cfg.a, b = r.cfg.b === '' ? H : +r.cfg.b;
+      const bad = r.cfg.on && !(b > a);
+      return `<tr data-id="band-${r.key}" class="${bad?'need':''}"><td><b>Ø${fmt(r.Do)}</b> ~ ${r.Di ? 'Ø'+fmt(r.Di) : '중심'}</td><td class="muted">${r.Di ? fmt((r.Do-r.Di)/2) : '-'}</td>
+        <td><input type="checkbox" data-b="${r.key}" data-f="on" ${r.cfg.on?'checked':''}></td>
+        <td style="white-space:nowrap">${r.cfg.on ? `<input type="number" step="any" data-b="${r.key}" data-f="a" value="${esc(r.cfg.a)}" placeholder="0" style="width:62px"> ~ <input type="number" step="any" data-b="${r.key}" data-f="b" value="${esc(r.cfg.b)}" placeholder="${H||'전체'}" style="width:62px">` : '<span class="muted">비움</span>'}</td></tr>`;
+    }).join('') + `</table><div class="muted" style="margin:4px 0 10px">예) 상면 플랜지 두께 18.37 → 0 ~ 18.37 · 바닥까지 내려오는 벽 → 0 ~ 전체 높이 · 이 동심원들은 아래 윤곽 목록에서 제외됩니다.</div>`;
+  }
+  $('#bandBox').innerHTML = html;
+  $('#bandOn').onchange = e => { S.bandMode = e.target.checked; S.bandTouched = true; invalidateBuild(); renderBands(); renderProfiles(); draw(); };
+  $('#bandBox').querySelectorAll('[data-b]').forEach(el => {
+    el.onchange = () => { const c = S.bands[el.dataset.b]; c[el.dataset.f] = el.type === 'checkbox' ? el.checked : el.value; invalidateBuild();
+      if (el.type === 'checkbox') renderBands(); else { const a = c.a === '' ? 0 : +c.a, b = c.b === '' ? (+$('#T').value||0) : +c.b; el.closest('tr').classList.toggle('need', c.on && !(b > a)); } refreshButtons(); };
+  });
+}
 function renderProfiles() {
   const rows = [];
   for (const k of ['top','bottom']) { const an = S.an[k]; if (!an || an.error) continue;
+    const bIds = bandActive() ? concentric().ids : null;
     an.profiles.forEach((p, i) => { const id = `${k}-P${i}`, c = S.pcfg[id];
+      if (bIds && bIds.has(id)) return;
       const opts = (p.outer && k==='top') ? ['outer'] : (k==='top' ? ['none','thru','boss','pocket','pocket_bot','ignore'] : ['none','dup','pocket_bot','thru','ignore']);
       const needVal = ['boss','pocket','pocket_bot'].includes(c.type);
       const need = c.type === 'none' || (needVal && !(+c.val > 0));
@@ -788,14 +872,25 @@ function bindCfg(sel, attr, store, rerender) {
 }
 ['#scaleN','#wSel','#mirSel'].forEach(s => $(s).addEventListener('change', () => { if (s !== '#scaleN') {} S.pcfg = s==='#mirSel' ? S.pcfg : S.pcfg; reanalyze(); }));
 ['#T','#dens','#dw'].forEach(s => $(s).addEventListener('input', () => { invalidateBuild(); refreshButtons(); }));
+// 판 두께(전체 높이) 변경 시 표를 다시 그리지 않고 안내값만 갱신 (다시 그리면 입력 중인 칸의 포커스가 사라짐)
+$('#T').addEventListener('input', () => { if (!bandActive()) return; const H = +$('#T').value || 0;
+  $('#bandBox').querySelectorAll('input[data-f=b]').forEach(el => { el.placeholder = H || '전체'; const c = S.bands[el.dataset.b];
+    const a = c.a === '' ? 0 : +c.a, bb = c.b === '' ? H : +c.b; el.closest('tr').classList.toggle('need', c.on && !(bb > a)); }); });
 
 // ---------- build ----------
 function issues() {
   const errs = [], warns = [];
   if (!S.an.top || S.an.top.error) errs.push('상면도 영역을 지정하세요.');
   if (!(+$('#T').value > 0)) errs.push('판 두께를 입력하세요.');
+  const bIdsI = bandActive() ? concentric().ids : null;
+  if (bIdsI) { const H = +$('#T').value || 0; const br = bandRows();
+    if (!br.rows.some(r => r.cfg.on)) errs.push('링 단차: 재료가 있는 구간을 하나 이상 체크하세요.');
+    for (const r of br.rows) { if (!r.cfg.on) continue; const a = r.cfg.a === '' ? 0 : +r.cfg.a, b = r.cfg.b === '' ? H : +r.cfg.b;
+      if (!(b > a)) errs.push({ id: `band-${r.key}`, msg: `③ 링 단차: Ø${fmt(r.Do)} ~ ${r.Di?'Ø'+fmt(r.Di):'중심'} 구간의 "까지" 값이 "상면에서" 값보다 커야 합니다.` });
+      if (b > H + 1e-6) errs.push({ id: `band-${r.key}`, msg: `③ 링 단차: Ø${fmt(r.Do)} 구간 값(${b})이 전체 높이(판 두께 ${H})보다 큽니다. 판 두께 칸에 전체 높이를 넣으세요.` }); } }
   for (const k of ['top','bottom']) { const an = S.an[k]; if (!an || an.error) continue;
     an.profiles.forEach((p, i) => { const c = S.pcfg[`${k}-P${i}`];
+      if (bIdsI && bIdsI.has(`${k}-P${i}`)) return;
       if (c.type === 'none') warns.push(`미지정 윤곽(${fmt(p.bbox[2]-p.bbox[0],1)}×${fmt(p.bbox[3]-p.bbox[1],1)})은 무시됩니다.`);
       if (['boss','pocket','pocket_bot'].includes(c.type) && !(+c.val > 0)) errs.push({ id: `${k}-P${i}`, msg: `③ 윤곽 지정: ${p.circleD ? 'Ø'+fmt(p.circleD) : fmt(p.bbox[2]-p.bbox[0],1)+'×'+fmt(p.bbox[3]-p.bbox[1],1)} 의 높이/깊이를 입력하세요.` }); });
     for (const g of an.groups) { const c = S.hcfg[g.id]; if (['blind_top','blind_bot','cb_top','cb_bot'].includes(c.type) && !(+c.depth > 0)) errs.push({ id: g.id, msg: `④ 홀 지정: Ø${fmt(g.d)} × ${g.items.length} 의 깊이를 "깊이" 칸에 입력하세요.` });
@@ -827,9 +922,19 @@ async function build() {
   try {
     const T = +$('#T').value; const top = S.an.top;
     const all = [];
-    for (const k of ['top','bottom']) { const an = S.an[k]; if (!an || an.error) continue; an.profiles.forEach((p, i) => all.push({ p, c: S.pcfg[`${k}-P${i}`] })); }
+    const bSkip = bandActive() ? concentric().ids : new Set();
+    for (const k of ['top','bottom']) { const an = S.an[k]; if (!an || an.error) continue; an.profiles.forEach((p, i) => { if (!bSkip.has(`${k}-P${i}`)) all.push({ p, c: S.pcfg[`${k}-P${i}`] }); }); }
     const outer = top.profiles.find(p => p.outer);
-    let body = drawEnts(outer.ents).sketchOnPlane('XY', 0).extrude(T);
+    let body;
+    const bIdsB = bandActive() ? concentric().ids : null;
+    if (bIdsB) {
+      const br = bandRows(), { cx, cy } = br.c;
+      for (const r of br.rows) { if (!r.cfg.on) continue;
+        const a = r.cfg.a === '' ? 0 : +r.cfg.a, b = r.cfg.b === '' ? T : +r.cfg.b;
+        let sk = R.drawCircle(r.Do/2).translate(cx, cy); if (r.Di) sk = sk.cut(R.drawCircle(r.Di/2).translate(cx, cy));
+        const sol = sk.sketchOnPlane('XY', T - b).extrude(b - a);
+        body = body ? body.fuse(sol) : sol; }
+    } else body = drawEnts(outer.ents).sketchOnPlane('XY', 0).extrude(T);
     // adds
     const bosses = [];
     for (const { p, c } of all) if (c.type === 'boss') { const h = +c.val; body = body.fuse(drawEnts(p.ents).sketchOnPlane('XY', T).extrude(h)); bosses.push({ poly: p.mm, z: T + h }); }
@@ -844,7 +949,12 @@ async function build() {
       body = body.cut(drawEnts(p.ents).sketchOnPlane('XY', z0).extrude(z1 - z0));
     }
     // local top surface at a point
-    const localTop = pt => { let z = T; for (const b of bosses) if (pip(pt, b.poly)) z = Math.max(z, b.z); for (const c of cuts) if (pip(pt, c.poly) && c.z < z) z = c.z; return z; };
+    // 링 단차 모드: 반지름 위치의 구간 상·하면
+    const bandAt = pt => { if (!bIdsB) return null; const br = bandRows(); const rr = 2*Math.hypot(pt[0]-br.c.cx, pt[1]-br.c.cy);
+      const r = br.rows.find(q => rr <= q.Do + 1e-6 && rr >= q.Di - 1e-6); if (!r || !r.cfg.on) return null;
+      return { top: T - (r.cfg.a === '' ? 0 : +r.cfg.a), bot: T - (r.cfg.b === '' ? T : +r.cfg.b) }; };
+    const localBot = pt => { const b = bandAt(pt); return b ? b.bot : 0; };
+    const localTop = pt => { const bd = bandAt(pt); let z = bd ? bd.top : T; for (const b of bosses) if (pip(pt, b.poly)) z = Math.max(z, b.z); for (const c of cuts) if (pip(pt, c.poly) && c.z < z) z = c.z; return z; };
     const cyl = (x, y, d, z0, z1) => R.makeCylinder(d/2, z1 - z0, [x, y, z0]);
     const holeLog = [];
     for (const k of ['top','bottom']) { const an = S.an[k]; if (!an || an.error) continue;
@@ -853,12 +963,12 @@ async function build() {
         for (const h of g.items) {
           let z0, z1;
           if (c.type === 'thru_cb_top' || c.type === 'thru_cb_bot') {
-            const cb = c.type === 'thru_cb_top' ? (() => { const zt = localTop([h.x, h.y]); return cyl(h.x, h.y, +c.cbd, zt - dp, Ztop + 1); })() : cyl(h.x, h.y, +c.cbd, -1, dp);
+            const cb = c.type === 'thru_cb_top' ? (() => { const zt = localTop([h.x, h.y]); return cyl(h.x, h.y, +c.cbd, zt - dp, Ztop + 1); })() : cyl(h.x, h.y, +c.cbd, -1, localBot([h.x, h.y]) + dp);
             const t = cyl(h.x, h.y, g.d, -1, Ztop + 1).fuse(cb); tool = tool ? tool.fuse(t) : t; continue;
           }
           if (c.type === 'thru') { z0 = -1; z1 = Ztop + 1; }
           else if (c.type === 'blind_top' || c.type === 'cb_top') { const zt = localTop([h.x, h.y]); z0 = zt - dp; z1 = Ztop + 1; }
-          else { z0 = -1; z1 = dp; }
+          else { z0 = -1; z1 = localBot([h.x, h.y]) + dp; }
           const t = cyl(h.x, h.y, g.d, z0, z1); tool = tool ? tool.fuse(t) : t;
         }
         if (tool) { body = body.cut(tool); holeLog.push(`Ø${fmt(g.d)}×${g.items.length} ${HLAB[c.type]}${c.cbd && c.type.startsWith('thru_cb') ? ` Ø${c.cbd}` : ''}${dp?` 깊이 ${dp}`:''}`); }
@@ -948,7 +1058,7 @@ stage.addEventListener('drop', e => { e.preventDefault(); $('#drop').classList.r
 // ---------- config save/load ----------
 $('#bSaveCfg').onclick = () => {
   const cfg = { v: 1, file: S.fileName, views: S.views, scaleN: +$('#scaleN').value, width: $('#wSel').value, mirror: $('#mirSel').value,
-    T: $('#T').value, mat: $('#mat').value, dens: $('#dens').value, dw: $('#dw').value, pno: $('#pno').value, pcfg: S.pcfg, hcfg: S.hcfg };
+    T: $('#T').value, mat: $('#mat').value, dens: $('#dens').value, dw: $('#dw').value, pno: $('#pno').value, pcfg: S.pcfg, hcfg: S.hcfg, bands: S.bands, bandMode: S.bandMode };
   const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(cfg, null, 1)], { type: 'application/json' }));
   a.download = ($('#pno').value || 'part') + '_변환설정.json'; a.click();
 };
@@ -959,7 +1069,7 @@ $('#cfgFi').onchange = async e => {
   try { const c = JSON.parse(await f.text());
     S.views = c.views; $('#scaleN').value = c.scaleN; $('#wSel').value = c.width; $('#mirSel').value = c.mirror;
     $('#T').value = c.T; $('#mat').value = c.mat; $('#dens').value = c.dens; $('#dw').value = c.dw; $('#pno').value = c.pno;
-    S.pcfg = c.pcfg || {}; S.hcfg = c.hcfg || {};
+    S.pcfg = c.pcfg || {}; S.hcfg = c.hcfg || {}; S.bands = c.bands || {}; S.bandMode = c.bandMode ?? null; S.bandTouched = c.bandMode != null;
     if (S.views.top) await showPage(S.views.top.page);
     reanalyze();
   } catch (err) { alert('설정 파일을 읽을 수 없습니다: ' + err.message); }
